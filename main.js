@@ -74,7 +74,7 @@ async function boot() {
       },
     }).start();
   } else {
-    log('CLOUDFLARE_TUNNEL_TOKEN chưa cấu hình: không mở tunnel');
+    log(`Chế độ local (không có CLOUDFLARE_TUNNEL_TOKEN): đặt SBOK_WORKER_URL=http://localhost:${config.port} ở sbok-service`);
   }
 }
 

@@ -15,8 +15,11 @@ function run(cmd, args) {
 async function startupCheck(config) {
   fs.mkdirSync(config.workDir, { recursive: true });
   const checks = [];
-  const cf = await run(config.cloudflaredPath, ['--version']);
-  checks.push({ name: 'cloudflared', ok: cf.ok, detail: cf.out });
+  // Không có tunnel token = chạy local: backend gọi thẳng http://localhost:port, không cần cloudflared
+  if (config.tunnelToken) {
+    const cf = await run(config.cloudflaredPath, ['--version']);
+    checks.push({ name: 'cloudflared', ok: cf.ok, detail: cf.out });
+  }
 
   const stat = await fs.promises.statfs(config.workDir);
   const freeGb = (stat.bavail * stat.bsize) / 1024 ** 3;
@@ -29,7 +32,7 @@ async function startupCheck(config) {
   const ff = await run(config.ffmpegPath, ['-version']);
   checks.push({ name: 'ffmpeg', ok: ff.ok, detail: ff.out });
 
-  const missing = ['workerToken', 'tunnelToken'].filter((k) => !config[k]);
+  const missing = ['workerToken'].filter((k) => !config[k]);
   const r2Missing = Object.entries(config.r2).filter(([, v]) => !v).map(([k]) => `R2.${k}`);
   checks.push({ name: 'Cấu hình env', ok: missing.length + r2Missing.length === 0, detail: [...missing, ...r2Missing].join(', ') || 'đủ' });
 
