@@ -7,8 +7,8 @@ const crypto = require('crypto');
 const { pipeline } = require('stream/promises');
 const { execFile } = require('child_process');
 
-/** Lệnh kiểm VieNeu-TTS đã cài (tên module chờ C-0a xác nhận theo README của tác giả). */
-const TTS_IMPORT = 'import vieneu_tts, soundfile, numpy';
+/** Lệnh kiểm VieNeu-TTS đã cài (SDK `vieneu`, theo README tác giả). */
+const TTS_IMPORT = 'from vieneu import Vieneu; import numpy';
 
 /** BR-15 (#93): chỉ tải từ các host này. Hằng số, không đọc từ env, settings.json hay IPC. */
 const ALLOWED_HOSTS = new Set([
