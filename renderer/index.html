@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'" />
+  <title>SBOK Worker</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 16px; }
+    .ok { color: #34d399; } .bad { color: #f87171; }
+    table { border-collapse: collapse; } td { padding: 4px 12px 4px 0; }
+    pre { background: #020617; padding: 8px; height: 360px; overflow: auto; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>SBOK Worker</h2>
+  <p>Tunnel: <b id="tunnel">-</b> · Nhận job: <b id="ready">-</b></p>
+  <table id="checks"></table>
+  <h3>Log</h3>
+  <pre id="log"></pre>
+  <script>
+    const el = (id) => document.getElementById(id);
+    function render(s) {
+      el('tunnel').textContent = s.tunnel;
+      el('ready').textContent = s.ready ? 'Sẵn sàng' : 'Tạm dừng (kiểm tra khởi động lỗi)';
+      el('ready').className = s.ready ? 'ok' : 'bad';
+      el('checks').replaceChildren(...s.checks.map((c) => {
+        const tr = document.createElement('tr');
+        for (const [text, cls] of [[c.ok ? '✔' : '✘', c.ok ? 'ok' : 'bad'], [c.name], [c.detail]]) {
+          const td = document.createElement('td');
+          td.textContent = text;
+          if (cls) td.className = cls;
+          tr.appendChild(td);
+        }
+        return tr;
+      }));
+    }
+    function append(line) {
+      const pre = el('log');
+      pre.textContent += line + '\n';
+      pre.scrollTop = pre.scrollHeight;
+    }
+    window.sbok.snapshot().then((s) => { render(s); s.logs.forEach(append); });
+    window.sbok.onState(render);
+    window.sbok.onLog(append);
+  </script>
+</body>
+</html>
