@@ -1,7 +1,23 @@
 'use strict';
 
+const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { parseEnv } = require('util');
+
+/** Nạp `.env` đầu tiên tìm thấy trong `dirs` vào `env`; biến đã đặt cho tiến trình được giữ nguyên. */
+function loadEnvFile(dirs, env = process.env) {
+  for (const dir of dirs) {
+    const file = path.join(dir, '.env');
+    if (!fs.existsSync(file)) continue;
+    const parsed = parseEnv(fs.readFileSync(file, 'utf8'));
+    for (const [key, value] of Object.entries(parsed)) {
+      if (env[key] === undefined) env[key] = value;
+    }
+    return file;
+  }
+  return null;
+}
 
 /** Cấu hình từ env (BR-14: bí mật không hard-code). */
 function loadConfig(env = process.env) {
@@ -29,4 +45,4 @@ function loadConfig(env = process.env) {
   };
 }
 
-module.exports = { loadConfig };
+module.exports = { loadConfig, loadEnvFile };

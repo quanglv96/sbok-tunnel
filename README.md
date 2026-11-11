@@ -10,8 +10,10 @@ VieNeu-TTS, đẩy MP3 lên R2.
 - `ffmpeg`
 
 ## Cấu hình
-Các biến môi trường liệt kê trong `.env.example`. Ứng dụng không tự đọc file `.env`:
-đặt biến cho tiến trình trước khi chạy (ví dụ PowerShell: `$env:SBOK_WORKER_PORT="7860"`).
+Chép `.env.example` thành `.env` rồi điền giá trị. Ứng dụng tự đọc `.env` ở thư mục chạy lệnh
+(`npm start`) hoặc cạnh file `.exe` (bản đóng gói). Biến đã đặt cho tiến trình được ưu tiên hơn `.env`.
+Python không có trong PATH (lỗi `spawn python ENOENT`) thì đặt `PYTHON_PATH` là đường dẫn đầy đủ tới
+`python.exe` (của venv đã cài VieNeu-TTS).
 
 ## Lệnh build
 ```bash

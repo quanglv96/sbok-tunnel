@@ -2,7 +2,7 @@
 
 const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage } = require('electron');
 const path = require('path');
-const { loadConfig } = require('./src/config');
+const { loadConfig, loadEnvFile } = require('./src/config');
 const { startupCheck } = require('./src/startupCheck');
 const { createTunnelManager } = require('./src/tunnelManager');
 const { createJobServer } = require('./src/jobServer');
@@ -10,6 +10,8 @@ const { createBackendClient } = require('./src/backendClient');
 const { createR2Uploader } = require('./src/r2Uploader');
 const { processJob } = require('./src/pipeline');
 
+// Chạy dev: `.env` ở thư mục chạy lệnh; bản đóng gói: `.env` cạnh file .exe
+const envFile = loadEnvFile([process.cwd(), path.dirname(process.execPath)]);
 const config = loadConfig();
 const state = { checks: [], ready: false, tunnel: 'STOPPED', logs: [] };
 let win = null;
@@ -46,6 +48,7 @@ function createWindow() {
 }
 
 async function boot() {
+  log(envFile ? `Đã nạp env từ ${envFile}` : 'Không thấy file .env: chỉ dùng biến môi trường của tiến trình');
   const result = await startupCheck(config);
   state.checks = result.checks;
   state.ready = result.ok;
