@@ -20,8 +20,19 @@ test('loadEnvFile nạp .env đầu tiên tìm thấy, không ghi đè biến đ
   assert.strictEqual(env.R2_BUCKET, 'sbok');
   assert.strictEqual(env.SBOK_WORKER_PORT, '7000');
   const config = loadConfig(env);
-  assert.strictEqual(config.pythonPath, 'C:\\Python312\\python.exe');
   assert.strictEqual(config.port, 7000);
+});
+
+test('TC-51: loadConfig bỏ qua PYTHON_PATH/FFMPEG_PATH/SBOK_WORK_DIR, workDir lấy từ dataDir', () => {
+  const env = { PYTHON_PATH: 'C:\\x\\python.exe', FFMPEG_PATH: 'C:\\x\\ffmpeg.exe', SBOK_WORK_DIR: 'C:\\x' };
+  const workDir = path.join(os.tmpdir(), 'sbok-data', 'work');
+  const config = loadConfig(env, workDir);
+  assert.strictEqual(config.pythonPath, 'python');
+  assert.strictEqual(config.ffmpegPath, 'ffmpeg');
+  assert.strictEqual(config.workDir, workDir);
+  assert.strictEqual(config.jobsDir, path.join(workDir, 'jobs'));
+  const example = fs.readFileSync(path.join(__dirname, '..', '.env.example'), 'utf8');
+  assert.ok(!/^(PYTHON_PATH|FFMPEG_PATH|SBOK_WORK_DIR)=/m.test(example));
 });
 
 test('loadEnvFile không có .env thì trả null, env giữ nguyên', () => {

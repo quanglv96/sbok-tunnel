@@ -2,6 +2,7 @@
 
 const { execFile } = require('child_process');
 const fs = require('fs');
+const { TTS_IMPORT } = require('./runtimeSetup');
 
 function run(cmd, args) {
   return new Promise((resolve) => {
@@ -27,7 +28,7 @@ async function startupCheck(config) {
 
   const py = await run(config.pythonPath, ['--version']);
   checks.push({ name: 'Python', ok: py.ok, detail: py.out });
-  const tts = await run(config.pythonPath, ['-c', 'import vieneu_tts, soundfile, numpy; print("ok")']);
+  const tts = await run(config.pythonPath, ['-c', TTS_IMPORT]);
   checks.push({ name: 'VieNeu-TTS', ok: tts.ok, detail: tts.ok ? 'đã cài' : tts.out });
   const ff = await run(config.ffmpegPath, ['-version']);
   checks.push({ name: 'ffmpeg', ok: ff.ok, detail: ff.out });

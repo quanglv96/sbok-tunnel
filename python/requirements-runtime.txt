@@ -1,0 +1,4 @@
+# Danh sách gói pip app tự cài vào {dataDir}/runtime/python (BR-15, #93).
+# Mỗi dòng `ten-goi==phien-ban`, gồm cả gói kéo theo, sinh từ `pip freeze` của môi trường đã chạy được TC-24 (C-0a).
+# Cài bằng: pip install --isolated --no-deps --index-url https://pypi.org/simple -r requirements-runtime.txt
+# File chưa có dòng gói nào thì app không cài VieNeu-TTS và báo đỏ.

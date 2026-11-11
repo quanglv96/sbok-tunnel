@@ -1,0 +1,142 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert');
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { Readable } = require('stream');
+const {
+  ALLOWED_HOSTS, MANIFEST, PYPI_INDEX, REQUIREMENTS, TTS_IMPORT,
+  download, ensureRuntime, pipInstallArgs, readRequirements, runtimeEnv,
+} = require('../src/runtimeSetup');
+
+const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
+const reply = (statusCode, body = '', headers = {}) => Object.assign(Readable.from([Buffer.from(body)]), { statusCode, headers });
+const item = { name: 'test', url: 'https://github.com/x/y.zip', sha256: sha('abc') };
+
+test('TC-48: SHA-256 đúng → ghi file; sai → xoá file, lỗi', async () => {
+  const dest = path.join(tmp('sbok-dl-'), 'f.zip');
+  await download(item, dest, async () => reply(200, 'abc'));
+  assert.strictEqual(fs.readFileSync(dest, 'utf8'), 'abc');
+
+  const bad = path.join(tmp('sbok-dl-'), 'f.zip');
+  await assert.rejects(download(item, bad, async () => reply(200, 'xyz')), /SHA-256 không khớp/);
+  assert.ok(!fs.existsSync(bad));
+});
+
+test('TC-53: http, host ngoài allowlist, redirect ra ngoài → từ chối trước khi ghi file', async () => {
+  const dest = path.join(tmp('sbok-dl-'), 'f.zip');
+  const calls = [];
+  const get = async (url) => {
+    calls.push(url);
+    return reply(302, '', { location: 'https://evil.example/f.zip' });
+  };
+  await assert.rejects(download({ ...item, url: 'http://github.com/x' }, dest, get), /không được phép/);
+  await assert.rejects(download({ ...item, url: 'https://evil.example/x' }, dest, get), /không được phép/);
+  await assert.rejects(download(item, dest, get), /không được phép/);
+  assert.deepStrictEqual(calls, [item.url]);
+  assert.ok(!fs.existsSync(dest));
+
+  // Redirect trong allowlist thì theo
+  const ok = [];
+  await download(item, dest, async (url) => {
+    ok.push(url);
+    return ok.length === 1 ? reply(302, '', { location: 'https://objects.githubusercontent.com/f' }) : reply(200, 'abc');
+  });
+  assert.strictEqual(ok[1], 'https://objects.githubusercontent.com/f');
+});
+
+test('mục manifest chưa ghim SHA-256 → không tải, báo lỗi', async () => {
+  let called = false;
+  await assert.rejects(download({ ...item, sha256: '' }, 'x', async () => { called = true; }), /chưa ghim/);
+  assert.strictEqual(called, false);
+});
+
+const unpinned = Object.entries(MANIFEST).filter(([, m]) => !/^[0-9a-f]{64}$/.test(m.sha256)).map(([k]) => k);
+test('TC-53 (tĩnh): mọi mục manifest có host allowlist + sha256 64 hex', { todo: unpinned.length ? `chờ C-0a ghim: ${unpinned}` : false }, () => {
+  for (const m of Object.values(MANIFEST)) {
+    assert.ok(ALLOWED_HOSTS.has(new URL(m.url).hostname), m.name);
+    assert.match(m.sha256, /^[0-9a-f]{64}$/, m.name);
+  }
+});
+
+test('TC-54: lệnh pip cố định PyPI, --no-deps, -r; env bỏ PIP_*/PYTHON*; file chỉ có dòng ghim ==', () => {
+  const args = pipInstallArgs();
+  assert.deepStrictEqual(args.slice(args.indexOf('--index-url'), args.indexOf('--index-url') + 2), ['--index-url', PYPI_INDEX]);
+  assert.ok(args.includes('--no-deps') && args.includes('--isolated'));
+  assert.strictEqual(args[args.indexOf('-r') + 1], REQUIREMENTS);
+
+  const env = runtimeEnv('D:\\data', { PIP_INDEX_URL: 'https://evil', PIP_EXTRA_INDEX_URL: 'x', PYTHONPATH: 'x', PATH: 'p' });
+  assert.deepStrictEqual(Object.keys(env).sort(), ['HF_HOME', 'PATH']);
+  assert.strictEqual(env.HF_HOME, path.join('D:\\data', 'runtime', 'hf'));
+
+  for (const line of readRequirements()) assert.match(line, /^[A-Za-z0-9._-]+==[^\s=]+$/, line);
+});
+
+/** Máy giả: `has` là các lệnh đang chạy được; tar/pip "cài" thì thêm vào `has`. */
+function fakeMachine(dataDir, has) {
+  const rt = path.join(dataDir, 'runtime');
+  const py = path.join(rt, 'python', 'python.exe');
+  const ff = path.join(rt, 'ffmpeg', 'bin', 'ffmpeg.exe');
+  const downloads = [];
+  const run = async (cmd, args) => {
+    if (cmd === 'tar') {
+      has.add(args.includes('--strip-components=1') ? `${ff} -version` : `${py} --version`);
+      return { ok: true, out: '' };
+    }
+    if (args[0] && args[0].endsWith('get-pip.py')) has.add(`${py} -m pip --version`);
+    if (args.includes('--no-deps')) has.add(`${py} -c ${TTS_IMPORT}`);
+    const key = `${cmd} ${args.join(' ')}`;
+    return { ok: has.has(key) || args[0]?.endsWith('get-pip.py') || args.includes('--no-deps'), out: key };
+  };
+  const dl = async (m, dest) => {
+    downloads.push(m.name);
+    return dest;
+  };
+  return { py, ff, run, dl, downloads };
+}
+
+test('TC-47/TC-49: đủ cả 3 → dùng đúng thứ tự settings → runtime → PATH, không tải gì', async () => {
+  const dataDir = tmp('sbok-rt-');
+  const has = new Set([`python -c ${TTS_IMPORT}`, 'ffmpeg -version']);
+  const m = fakeMachine(dataDir, has);
+  has.add(`${m.ff} -version`);
+  const settings = { pythonPath: 'C:\\hong\\python.exe', ffmpegPath: 'C:\\hong\\ffmpeg.exe' };
+  const r = await ensureRuntime({ dataDir, settings, log: () => {}, deps: { run: m.run, download: m.dl } });
+  assert.deepStrictEqual(r, { pythonPath: 'python', ffmpegPath: m.ff, errors: [] });
+  assert.deepStrictEqual(m.downloads, []);
+});
+
+test('chỉ thiếu ffmpeg → chỉ cài ffmpeg vào {dataDir}/runtime', async () => {
+  const dataDir = tmp('sbok-rt-');
+  const m = fakeMachine(dataDir, new Set([`python -c ${TTS_IMPORT}`]));
+  const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl } });
+  assert.deepStrictEqual(r, { pythonPath: 'python', ffmpegPath: m.ff, errors: [] });
+  assert.deepStrictEqual(m.downloads, [MANIFEST.ffmpeg.name]);
+});
+
+test('thiếu Python/VieNeu-TTS → tải Python + get-pip, cài gói ghim, dùng python trong runtime', async () => {
+  const dataDir = tmp('sbok-rt-');
+  const req = path.join(dataDir, 'req.txt');
+  fs.writeFileSync(req, '# x\nnumpy==1.26.4\n');
+  const m = fakeMachine(dataDir, new Set(['ffmpeg -version']));
+  const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl, requirementsFile: req } });
+  assert.deepStrictEqual(r, { pythonPath: m.py, ffmpegPath: 'ffmpeg', errors: [] });
+  assert.deepStrictEqual(m.downloads, [MANIFEST.python.name, MANIFEST.getPip.name]);
+});
+
+test('TC-33: chưa có danh sách gói ghim hoặc tải lỗi → errors, path null (đỏ, không nhận job)', async () => {
+  const dataDir = tmp('sbok-rt-');
+  const req = path.join(dataDir, 'req.txt');
+  fs.writeFileSync(req, '# chưa có gói\n');
+  const m = fakeMachine(dataDir, new Set());
+  const failDl = async () => { throw new Error('SHA-256 không khớp'); };
+  const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: failDl, requirementsFile: req } });
+  assert.strictEqual(r.pythonPath, null);
+  assert.strictEqual(r.ffmpegPath, null);
+  assert.match(r.errors[0], /chưa có danh sách gói pip/);
+  assert.match(r.errors[1], /SHA-256 không khớp/);
+});
