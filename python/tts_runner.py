@@ -32,6 +32,28 @@ def chunks(text):
         yield buf
 
 
+def use_real_files_in_hf_cache():
+    """ONNX Runtime chặn file .data ngoài thư mục model sau khi theo symlink (snapshot -> blobs của HF cache).
+
+    Tắt symlink cho lần tải mới (HF chuyển blob thành file thật trong snapshot) và thay symlink đã có bằng file thật.
+    """
+    import shutil
+    import huggingface_hub.file_download as hf_download
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    hf_download.are_symlinks_supported = lambda *_args, **_kwargs: False
+    if not os.path.isdir(HF_HUB_CACHE):
+        return
+    for repo in os.listdir(HF_HUB_CACHE):
+        for root, _dirs, files in os.walk(os.path.join(HF_HUB_CACHE, repo, "snapshots")):
+            for name in files:
+                link = os.path.join(root, name)
+                target = os.path.realpath(link)
+                if os.path.islink(link) and os.path.isfile(target):
+                    shutil.copyfile(target, link + ".tmp")
+                    os.replace(link + ".tmp", link)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="src", required=True)
@@ -48,6 +70,7 @@ def main():
     import numpy as np
     from vieneu import Vieneu
 
+    use_real_files_in_hf_cache()
     tts = Vieneu(mode=mode) if mode else Vieneu()
     with open(args.src, encoding="utf-8") as f:
         text = f.read()
