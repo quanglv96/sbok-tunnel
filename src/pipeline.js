@@ -27,9 +27,11 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
       return;
     }
 
+    log(`Task ${taskId}: qua kiểm tra an toàn, đang trích chữ`);
     await backend.progress(taskId, 'PARSING');
     const { text, title, author } = await extract(pdfPath);
     const chapters = splitChapters(text);
+    log(`Task ${taskId}: ${text.length} ký tự, ${chapters.length} chương`);
     if (chapters.length === 0) {
       await backend.failed(taskId, 'Không trích được chữ từ PDF (có thể là ảnh scan)');
       return;
@@ -43,7 +45,10 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
       const txt = path.join(textDir, `${ch.index}.txt`);
       const mp3 = path.join(mp3Dir, `${ch.index}.mp3`);
       fs.writeFileSync(txt, ch.text, 'utf8');
+      log(`Task ${taskId}: TTS chương ${results.length + 1}/${chapters.length} (${ch.text.length} ký tự)`);
+      const startedAt = Date.now();
       const { durationSec } = await tts(config, txt, mp3, log);
+      log(`Task ${taskId}: xong chương ${results.length + 1}/${chapters.length} sau ${Math.round((Date.now() - startedAt) / 1000)} s`);
       results.push({ ...ch, mp3, sizeBytes: fs.statSync(mp3).size, durationSec });
     }
 

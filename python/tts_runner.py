@@ -80,7 +80,13 @@ def main():
     with open(args.src, encoding="utf-8") as f:
         text = f.read()
 
-    pieces = [np.asarray(tts.infer(part), dtype=np.float32) for part in chunks(text)]
+    parts = list(chunks(text))
+    step = max(1, len(parts) // 10)
+    pieces = []
+    for i, part in enumerate(parts, 1):
+        pieces.append(np.asarray(tts.infer(part), dtype=np.float32))
+        if i % step == 0 or i == len(parts):
+            print(f"chunk {i}/{len(parts)}", file=sys.stderr, flush=True)  # ASCII: stderr có thể là cp1252
     if not pieces:
         sys.exit("chương rỗng")
 
