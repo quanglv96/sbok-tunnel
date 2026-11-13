@@ -66,7 +66,7 @@ test('TC-53 (tĩnh): mọi mục manifest có host allowlist + sha256 64 hex', {
 test('TC-54: lệnh pip cố định PyPI, --no-deps, -r; env bỏ PIP_*/PYTHON*; file chỉ có dòng ghim ==', () => {
   const args = pipInstallArgs();
   assert.deepStrictEqual(args.slice(args.indexOf('--index-url'), args.indexOf('--index-url') + 2), ['--index-url', PYPI_INDEX]);
-  assert.ok(args.includes('--no-deps') && args.includes('--isolated'));
+  assert.ok(args.includes('--no-deps') && args.includes('--isolated') && args.includes('--no-cache-dir'));
   assert.strictEqual(args[args.indexOf('-r') + 1], REQUIREMENTS);
 
   const env = runtimeEnv('D:\\data', { PIP_INDEX_URL: 'https://evil', PIP_EXTRA_INDEX_URL: 'x', PYTHONPATH: 'x', PATH: 'p' });
@@ -99,33 +99,34 @@ function fakeMachine(dataDir, has) {
   return { py, ff, run, dl, downloads };
 }
 
-test('TC-47/TC-49: đủ cả 3 → dùng đúng thứ tự settings → runtime → PATH, không tải gì', async () => {
+test('TC-47/TC-49: lần khởi động sau, runtime trong thư mục data đủ → dùng luôn, không tải gì', async () => {
   const dataDir = tmp('sbok-rt-');
-  const has = new Set([`python -c ${TTS_IMPORT}`, 'ffmpeg -version']);
+  const has = new Set();
   const m = fakeMachine(dataDir, has);
-  has.add(`${m.ff} -version`);
-  const settings = { pythonPath: 'C:\\hong\\python.exe', ffmpegPath: 'C:\\hong\\ffmpeg.exe' };
-  const r = await ensureRuntime({ dataDir, settings, log: () => {}, deps: { run: m.run, download: m.dl } });
-  assert.deepStrictEqual(r, { pythonPath: 'python', ffmpegPath: m.ff, errors: [] });
+  has.add(`${m.py} -c ${TTS_IMPORT}`).add(`${m.ff} -version`);
+  const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl } });
+  assert.deepStrictEqual(r, { pythonPath: m.py, ffmpegPath: m.ff, errors: [] });
   assert.deepStrictEqual(m.downloads, []);
 });
 
-test('chỉ thiếu ffmpeg → chỉ cài ffmpeg vào {dataDir}/runtime', async () => {
-  const dataDir = tmp('sbok-rt-');
-  const m = fakeMachine(dataDir, new Set([`python -c ${TTS_IMPORT}`]));
-  const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl } });
-  assert.deepStrictEqual(r, { pythonPath: 'python', ffmpegPath: m.ff, errors: [] });
-  assert.deepStrictEqual(m.downloads, [MANIFEST.ffmpeg.name]);
-});
-
-test('thiếu Python/VieNeu-TTS → tải Python + get-pip, cài gói ghim, dùng python trong runtime', async () => {
+test('#109: Python/ffmpeg ở PATH chạy được vẫn bị bỏ qua → cài vào {dataDir}/runtime', async () => {
   const dataDir = tmp('sbok-rt-');
   const req = path.join(dataDir, 'req.txt');
   fs.writeFileSync(req, '# x\nnumpy==1.26.4\n');
-  const m = fakeMachine(dataDir, new Set(['ffmpeg -version']));
+  const m = fakeMachine(dataDir, new Set([`python -c ${TTS_IMPORT}`, 'ffmpeg -version']));
   const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl, requirementsFile: req } });
-  assert.deepStrictEqual(r, { pythonPath: m.py, ffmpegPath: 'ffmpeg', errors: [] });
-  assert.deepStrictEqual(m.downloads, [MANIFEST.python.name, MANIFEST.getPip.name]);
+  assert.deepStrictEqual(r, { pythonPath: m.py, ffmpegPath: m.ff, errors: [] });
+  assert.deepStrictEqual(m.downloads, [MANIFEST.python.name, MANIFEST.getPip.name, MANIFEST.ffmpeg.name]);
+});
+
+test('chỉ thiếu ffmpeg trong runtime → chỉ cài ffmpeg vào {dataDir}/runtime', async () => {
+  const dataDir = tmp('sbok-rt-');
+  const has = new Set();
+  const m = fakeMachine(dataDir, has);
+  has.add(`${m.py} -c ${TTS_IMPORT}`);
+  const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl } });
+  assert.deepStrictEqual(r, { pythonPath: m.py, ffmpegPath: m.ff, errors: [] });
+  assert.deepStrictEqual(m.downloads, [MANIFEST.ffmpeg.name]);
 });
 
 test('TC-33: chưa có danh sách gói ghim hoặc tải lỗi → errors, path null (đỏ, không nhận job)', async () => {

@@ -112,9 +112,10 @@ function readRequirements(file = REQUIREMENTS) {
   return lines.map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
 }
 
-/** Lệnh pip cố định: chỉ PyPI, không kéo gói ngoài danh sách (TC-54). */
+/** Lệnh pip cố định: chỉ PyPI, không kéo gói ngoài danh sách (TC-54), không để cache pip ngoài thư mục data. */
 function pipInstallArgs(file = REQUIREMENTS) {
-  return ['-m', 'pip', 'install', '--isolated', '--no-input', '--no-deps', '--index-url', PYPI_INDEX, '-r', file];
+  return ['-m', 'pip', 'install', '--isolated', '--no-input', '--no-deps', '--no-cache-dir',
+    '--index-url', PYPI_INDEX, '-r', file];
 }
 
 /** Ứng viên đầu tiên chạy thật thành công; không có → null (TC-47). */
@@ -139,10 +140,11 @@ async function must(promise, what) {
 }
 
 /**
- * BR-15: kiểm Python + VieNeu-TTS và ffmpeg theo thứ tự settings → {dataDir}/runtime → PATH; thiếu cái nào thì
- * tự cài cái đó vào {dataDir}/runtime. Trả { pythonPath, ffmpegPath, errors } (path null = chưa dùng được).
+ * BR-15 (#109): toàn bộ thư viện nằm trong {dataDir}/runtime. Chỉ kiểm bản trong đó (không dùng PATH hay đường dẫn
+ * ngoài thư mục data); thiếu/hỏng cái nào thì tự cài cái đó vào đó. Gọi ở mọi lần khởi động.
+ * Trả { pythonPath, ffmpegPath, errors } (path null = chưa dùng được).
  */
-async function ensureRuntime({ dataDir, settings = {}, log = console.log, deps = {} }) {
+async function ensureRuntime({ dataDir, log = console.log, deps = {} }) {
   const run = deps.run || exec;
   const dl = deps.download || download;
   const reqFile = deps.requirementsFile || REQUIREMENTS;
@@ -153,7 +155,7 @@ async function ensureRuntime({ dataDir, settings = {}, log = console.log, deps =
 
   const pyDir = path.join(rt, 'python');
   const runtimePy = path.join(pyDir, 'python.exe');
-  let pythonPath = await firstWorking([settings.pythonPath, runtimePy, 'python'], (p) => ok(p, ['-c', TTS_IMPORT]));
+  let pythonPath = await firstWorking([runtimePy], (p) => ok(p, ['-c', TTS_IMPORT]));
   if (!pythonPath) {
     try {
       if (readRequirements(reqFile).length === 0) throw new Error('chưa có danh sách gói pip ghim trong app');
@@ -167,7 +169,7 @@ async function ensureRuntime({ dataDir, settings = {}, log = console.log, deps =
       if (!(await ok(runtimePy, ['-m', 'pip', '--version']))) {
         log('[setup] Đang cài pip');
         const getPip = await dl(MANIFEST.getPip, path.join(rt, 'downloads', 'get-pip.py'));
-        await must(run(runtimePy, [getPip, '--isolated', '--no-input', '--index-url', PYPI_INDEX,
+        await must(run(runtimePy, [getPip, '--isolated', '--no-input', '--no-cache-dir', '--index-url', PYPI_INDEX,
           '--no-setuptools', '--no-wheel'], { env, timeout: 0 }), 'Cài pip');
       }
       log('[setup] Đang cài VieNeu-TTS và thư viện (có thể mất nhiều phút)');
@@ -181,7 +183,7 @@ async function ensureRuntime({ dataDir, settings = {}, log = console.log, deps =
 
   const ffDir = path.join(rt, 'ffmpeg');
   const runtimeFf = path.join(ffDir, 'bin', 'ffmpeg.exe');
-  let ffmpegPath = await firstWorking([settings.ffmpegPath, runtimeFf, 'ffmpeg'], (p) => ok(p, ['-version']));
+  let ffmpegPath = await firstWorking([runtimeFf], (p) => ok(p, ['-version']));
   if (!ffmpegPath) {
     try {
       log('[setup] Đang cài ffmpeg vào ' + ffDir);

@@ -56,9 +56,11 @@ function prepare() {
     pushState();
     const file = settingsFile();
     const settings = readSettings(file);
-    const rt = await ensureRuntime({ dataDir: state.dataDir, settings, log });
-    config.pythonPath = rt.pythonPath || 'python';
-    config.ffmpegPath = rt.ffmpegPath || 'ffmpeg';
+    const rt = await ensureRuntime({ dataDir: state.dataDir, log });
+    // #109: không rơi về PATH; thiếu thì trỏ vào bản trong {dataDir}/runtime để startup check báo đỏ
+    const rtDir = path.join(state.dataDir, 'runtime');
+    config.pythonPath = rt.pythonPath || path.join(rtDir, 'python', 'python.exe');
+    config.ffmpegPath = rt.ffmpegPath || path.join(rtDir, 'ffmpeg', 'bin', 'ffmpeg.exe');
     writeSettings(file, {
       ...settings,
       dataDir: state.dataDir,
