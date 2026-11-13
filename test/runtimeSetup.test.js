@@ -83,7 +83,7 @@ test('TC-53 (tĩnh): mọi mục manifest có https + host allowlist + phiên b�
 test('TC-54: lệnh pip cố định PyPI, -r; env bỏ PIP_*/PYTHON*; file chỉ có dòng tên gói (ghim ==)', () => {
   const args = pipInstallArgs();
   assert.deepStrictEqual(args.slice(args.indexOf('--index-url'), args.indexOf('--index-url') + 2), ['--index-url', PYPI_INDEX]);
-  assert.ok(args.includes('--isolated') && args.includes('--no-cache-dir'));
+  assert.ok(args.includes('--isolated') && args.includes('--no-cache-dir') && args.includes('--no-input'));
   assert.ok(!args.some((a) => /extra-index|find-links|trusted-host/.test(a)));
   assert.strictEqual(args[args.indexOf('-r') + 1], REQUIREMENTS);
 
