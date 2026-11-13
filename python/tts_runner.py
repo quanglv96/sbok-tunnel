@@ -54,6 +54,33 @@ def use_real_files_in_hf_cache():
                     os.replace(link + ".tmp", link)
 
 
+def write_api_info(tts):
+    """#141: ghi chữ ký infer, thuộc tính công khai và danh sách giọng (nếu SDK có) ra {HF_HOME}/../vieneu-api.txt.
+
+    Chỉ để chọn giọng; lỗi ở đây không làm hỏng prefetch.
+    """
+    import pydoc
+    home = os.environ.get("HF_HOME")
+    if not home:
+        return
+    try:
+        members = [m for m in dir(tts) if not m.startswith("_")]
+        lines = [pydoc.render_doc(tts.infer, renderer=pydoc.plaintext), "members: " + json.dumps(members)]
+        for name in members:
+            attr = getattr(tts, name, None)
+            if "voice" not in name.lower():
+                continue
+            try:
+                value = attr() if callable(attr) else attr
+            except Exception as err:  # method cần tham số hoặc lỗi: chỉ ghi lại
+                value = f"<{type(err).__name__}: {err}>"
+            lines.append(f"{name}: {value!r}")
+        with open(os.path.join(os.path.dirname(home), "vieneu-api.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as err:
+        print(f"[prefetch] không ghi được vieneu-api.txt: {err}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="src")
@@ -84,6 +111,7 @@ def main():
     use_real_files_in_hf_cache()
     tts = Vieneu(mode=mode) if mode else Vieneu()
     if args.prefetch:
+        write_api_info(tts)
         return
     with open(args.src, encoding="utf-8") as f:
         text = f.read()

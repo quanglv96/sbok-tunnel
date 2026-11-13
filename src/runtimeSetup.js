@@ -232,6 +232,7 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
         progress(5, 'Tải model VieNeu-TTS (chỉ lần đầu, có thể mất nhiều phút)');
         await must(run(pythonPath, prefetch, { env, timeout: 0 }), 'Tải model');
       }
+      log('[setup] API/giọng VieNeu-TTS: ' + path.join(path.dirname(env.HF_HOME), 'vieneu-api.txt'));
     } catch (err) {
       errors.push(`Model VieNeu-TTS: ${err.message}`);
     }
