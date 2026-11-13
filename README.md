@@ -44,6 +44,24 @@ Giá trị sai thì job lỗi, có thông báo.
 Chép `.env.example` thành `.env` rồi điền giá trị. Ứng dụng tự đọc `.env` ở thư mục chạy lệnh
 (`npm start`) hoặc cạnh file `.exe` (bản đóng gói). Biến đã đặt cho tiến trình được ưu tiên hơn `.env`.
 
+## Chạy local không Cloudflare
+Dùng để build và test cả luồng trên một máy, sbok-service và sbok-tunnel gọi nhau qua `localhost:port` (BR-11a).
+Chỉ đổi `.env`, không cần sửa code:
+
+| biến (`.env` của sbok-tunnel) | giá trị local | ghi chú |
+|---|---|---|
+| `CLOUDFLARE_TUNNEL_TOKEN` | để trống | không chạy `cloudflared`, không kiểm tunnel |
+| `SBOK_WORKER_PORT` | `7860` (mặc định) | job server nghe `127.0.0.1:7860` |
+| `SBOK_BACKEND_URL` | `http://localhost:2040` | gọi thẳng sbok-service, **không** có `/api/sbok` (không qua Kong) |
+| `SBOK_WORKER_TOKEN` | giống `SBOK_WORKER_TOKEN` của sbok-service | token vẫn bắt buộc 2 chiều |
+
+Phía sbok-service đặt `SBOK_WORKER_URL=http://localhost:7860` (sbok-service chạy trong Docker thì
+`http://host.docker.internal:7860`). sbok-web chạy `ng serve`, proxy `/api/sbok` → `http://localhost:2040`.
+`http://` chỉ dùng cho local; bản production giữ mặc định `https://sbok.xvibe.me/api/sbok`.
+
+Kiểm nhanh: `GET http://localhost:2040/v1/system/status` trả ONLINE, trang web hiện nút Import, không có tiến trình
+`cloudflared`.
+
 ## Lệnh build
 ```bash
 # Cài dependency

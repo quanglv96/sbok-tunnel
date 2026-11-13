@@ -35,6 +35,13 @@ test('TC-51: loadConfig bỏ qua PYTHON_PATH/FFMPEG_PATH/SBOK_WORK_DIR, workDir 
   assert.ok(!/^(PYTHON_PATH|FFMPEG_PATH|SBOK_WORK_DIR)=/m.test(example));
 });
 
+test('TC-67: chạy local không Cloudflare: backendUrl http://localhost giữ nguyên, bỏ / cuối; mặc định production', () => {
+  assert.strictEqual(loadConfig({ SBOK_BACKEND_URL: 'http://localhost:2040/' }).backendUrl, 'http://localhost:2040');
+  assert.strictEqual(loadConfig({}).backendUrl, 'https://sbok.xvibe.me/api/sbok');
+  assert.strictEqual(loadConfig({ SBOK_WORKER_PORT: '' }).port, 7860);
+  assert.strictEqual(loadConfig({}).tunnelToken, '');
+});
+
 test('loadEnvFile không có .env thì trả null, env giữ nguyên', () => {
   const missing = fs.mkdtempSync(path.join(os.tmpdir(), 'sbok-env-none-'));
   const env = {};
