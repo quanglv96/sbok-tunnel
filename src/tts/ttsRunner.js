@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'python', 'tts_runner.py');
@@ -26,4 +27,50 @@ function synthesize({ pythonPath, ffmpegPath, mp3Bitrate }, textPath, mp3Path, l
   });
 }
 
-module.exports = { synthesize };
+/**
+ * P1 (AC-23): một tiến trình Python, nạp model 1 lần cho cả job. `items` = [{ in, out }]; mỗi chương xong gọi
+ * `onChapterDone(i, { durationSec })` (i từ 0). Thoát mã ≠ 0 → reject; `onChapterDone` ném lỗi → kill tiến trình, reject.
+ */
+function synthesizeBatch({ pythonPath, ffmpegPath, mp3Bitrate }, items, log = console.log, onChapterDone = () => {},
+  spawnFn = spawn) {
+  return new Promise((resolve, reject) => {
+    const batchFile = path.join(path.dirname(items[0].in), 'tts-batch.json');
+    fs.writeFileSync(batchFile, JSON.stringify(items), 'utf8');
+    const child = spawnFn(pythonPath, [SCRIPT, '--batch', batchFile, '--bitrate', mp3Bitrate, '--ffmpeg', ffmpegPath],
+      { windowsHide: true, env: { ...process.env, HF_HUB_OFFLINE: '1' } });
+    let buf = '';
+    let failure = null;
+    child.stdout.on('data', (d) => {
+      buf += d;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        let msg;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue; // dòng SDK tự in ra stdout
+        }
+        if (!msg || !Number.isInteger(msg.index) || failure) continue;
+        try {
+          onChapterDone(msg.index, { durationSec: msg.durationSec ?? null });
+        } catch (err) {
+          failure = err;
+          child.kill();
+        }
+      }
+    });
+    child.stderr.on('data', (d) => {
+      for (const line of String(d).split('\n')) if (line.trim()) log(`[tts] ${line.trim()}`);
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (failure) return reject(failure);
+      if (code !== 0) return reject(new Error(`TTS thoát mã ${code}`));
+      resolve();
+    });
+  });
+}
+
+module.exports = { synthesize, synthesizeBatch };

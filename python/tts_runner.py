@@ -1,6 +1,7 @@
 """SBOK TTS: đọc file .txt một chương, sinh giọng bằng SDK `vieneu` (mặc định v3 Turbo), xuất MP3 (64-128 kbps) qua ffmpeg.
 
 In ra stdout dòng JSON cuối: {"durationSec": <int>}. Lỗi -> mã thoát khác 0, chi tiết ở stderr.
+--batch <file.json> ([{"in", "out"}, ...]): nạp model 1 lần, mỗi chương xong in {"index": i, "durationSec": n}.
 SDK: `from vieneu import Vieneu`; không có GPU thì chạy ONNX Runtime trên CPU, không cần torch (README tác giả).
 Env VIENEU_MODEL: trống = v3 Turbo (48 kHz); "v3nano" = v3 Nano (24 kHz, nhanh hơn, chất lượng thấp hơn).
 """
@@ -87,11 +88,12 @@ def main():
     parser.add_argument("--in", dest="src")
     parser.add_argument("--out", dest="dst")
     parser.add_argument("--prefetch", action="store_true", help="chỉ tải/nạp model vào HF_HOME rồi thoát (#129)")
+    parser.add_argument("--batch", help="file JSON [{in, out}, ...]: nạp model 1 lần cho cả job (P1, AC-23)")
     parser.add_argument("--bitrate", default="96k")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     args = parser.parse_args()
-    if not args.prefetch and not (args.src and args.dst):
-        parser.error("cần --in và --out (hoặc --prefetch)")
+    if not args.prefetch and not args.batch and not (args.src and args.dst):
+        parser.error("cần --in và --out (hoặc --batch, --prefetch)")
     if args.bitrate not in ALLOWED_BITRATES:
         sys.exit(f"bitrate phải thuộc {sorted(ALLOWED_BITRATES)}")
     mode = os.environ.get("VIENEU_MODEL", "").strip()
@@ -106,7 +108,6 @@ def main():
     if not (0.7 <= speed <= 1.2 and 0 <= pause_ms <= 2000):
         sys.exit("SBOK_TTS_SPEED phải trong 0.7-1.2, SBOK_TTS_PAUSE_MS trong 0-2000")
 
-    import numpy as np
     from vieneu import Vieneu
 
     use_real_files_in_hf_cache()
@@ -119,7 +120,25 @@ def main():
     names = [name for _label, name in tts.list_preset_voices()]
     if voice not in names:
         sys.exit(f"SBOK_TTS_VOICE không có trong giọng preset: {voice}. Hợp lệ: {', '.join(names)}")
-    with open(args.src, encoding="utf-8") as f:
+    opts = dict(voice=voice, mode=mode, speed=speed, pause_ms=pause_ms, bitrate=args.bitrate, ffmpeg=args.ffmpeg)
+    if not args.batch:
+        print(json.dumps({"durationSec": synthesize_one(tts, args.src, args.dst, **opts)}))
+        return
+    # P1 (AC-23): model đã nạp 1 lần; mỗi chương xong in {"index": i (từ 0), "durationSec": n}. Lỗi chương nào thì
+    # thoát mã khác 0 ngay (job FAILED).
+    with open(args.batch, encoding="utf-8") as f:
+        items = json.load(f)
+    for i, item in enumerate(items):
+        print(f"chapter {i + 1}/{len(items)}", file=sys.stderr, flush=True)
+        duration = synthesize_one(tts, item["in"], item["out"], **opts)
+        print(json.dumps({"index": i, "durationSec": duration}), flush=True)
+
+
+def synthesize_one(tts, src, dst, voice, mode, speed, pause_ms, bitrate, ffmpeg):
+    """Một chương: .txt -> MP3. Trả thời lượng (giây, đã tính tốc độ)."""
+    import numpy as np
+
+    with open(src, encoding="utf-8") as f:
         text = f.read()
 
     parts = list(chunks(text))
@@ -140,11 +159,11 @@ def main():
         wav = tmp.name
     try:
         tts.save(audio, wav)
-        subprocess.run([args.ffmpeg, "-y", "-loglevel", "error", "-i", wav, "-filter:a", f"atempo={speed}", "-ac", "1",
-                        "-codec:a", "libmp3lame", "-b:a", args.bitrate, args.dst], check=True)
+        subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", wav, "-filter:a", f"atempo={speed}", "-ac", "1",
+                        "-codec:a", "libmp3lame", "-b:a", bitrate, dst], check=True)
     finally:
         os.remove(wav)
-    print(json.dumps({"durationSec": int(round(len(audio) / SAMPLE_RATES[mode] / speed))}))
+    return int(round(len(audio) / SAMPLE_RATES[mode] / speed))
 
 
 if __name__ == "__main__":

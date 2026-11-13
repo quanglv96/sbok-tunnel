@@ -5,7 +5,7 @@ const path = require('path');
 const { runScan } = require('./sandbox/scanWorker');
 const { extractText } = require('./extract/pdfText');
 const { splitChapters } = require('./extract/chapterSplitter');
-const { synthesize } = require('./tts/ttsRunner');
+const { synthesizeBatch } = require('./tts/ttsRunner');
 
 /** "Chương 2/5 · 40% · tổng 25%": tiến độ chương hiện tại và cả sách (theo số ký tự). */
 function progressText(label, chapterRatio, doneChars, totalChars) {
@@ -31,7 +31,7 @@ function spokenText(bookTitle, ch) {
 async function processJob(job, { config, backend, uploader, log = console.log, deps = {} }) {
   const scan = deps.runScan || runScan;
   const extract = deps.extractText || extractText;
-  const tts = deps.synthesize || synthesize;
+  const tts = deps.synthesizeBatch || synthesizeBatch;
   const { taskId, pdfPath, fileName } = job;
   const textDir = path.join(config.jobsDir, taskId);
   const mp3Dir = path.join(config.cacheDir, taskId);
@@ -62,25 +62,39 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
     await backend.progress(taskId, 'TTS_PROCESSING', `${chapters.length} chương, ${totalChars} ký tự`);
     fs.mkdirSync(textDir, { recursive: true });
     fs.mkdirSync(mp3Dir, { recursive: true });
+    // P1 (AC-23): ghi hết .txt rồi gọi TTS 1 lần cho cả job (model nạp 1 lần)
+    const items = chapters.map((ch) => {
+      const item = { in: path.join(textDir, `${ch.index}.txt`), out: path.join(mp3Dir, `${ch.index}.mp3`) };
+      fs.writeFileSync(item.in, spokenText(bookTitle, ch), 'utf8');
+      return item;
+    });
     const results = [];
-    for (const ch of chapters) {
-      const txt = path.join(textDir, `${ch.index}.txt`);
-      const mp3 = path.join(mp3Dir, `${ch.index}.mp3`);
-      fs.writeFileSync(txt, spokenText(bookTitle, ch), 'utf8');
-      const label = `Chương ${results.length + 1}/${chapters.length}`;
-      log(`Task ${taskId}: TTS chương ${results.length + 1}/${chapters.length} (${ch.text.length} ký tự)`);
-      await report(progressText(label, 0, doneChars, totalChars));
-      const startedAt = Date.now();
-      const ttsLog = (line) => {
-        log(line);
-        const m = /chunk (\d+)\/(\d+)/.exec(line);
-        if (m) void report(progressText(label, m[1] / m[2], doneChars + (ch.text.length * m[1]) / m[2], totalChars));
-      };
-      const { durationSec } = await tts(config, txt, mp3, ttsLog);
+    let cur = 0;
+    let startedAt = Date.now();
+    const label = () => `Chương ${cur + 1}/${chapters.length}`;
+    const ttsLog = (line) => {
+      log(line);
+      const c = /chapter (\d+)\/(\d+)/.exec(line);
+      if (c) {
+        cur = Number(c[1]) - 1;
+        startedAt = Date.now();
+        log(`Task ${taskId}: TTS chương ${cur + 1}/${chapters.length} (${chapters[cur].text.length} ký tự)`);
+        void report(progressText(label(), 0, doneChars, totalChars));
+      }
+      const m = /chunk (\d+)\/(\d+)/.exec(line);
+      if (m) {
+        const len = chapters[cur].text.length;
+        void report(progressText(label(), m[1] / m[2], doneChars + (len * m[1]) / m[2], totalChars));
+      }
+    };
+    const onChapterDone = (i, { durationSec }) => {
+      const ch = chapters[i];
       doneChars += ch.text.length;
-      log(`Task ${taskId}: xong chương ${results.length + 1}/${chapters.length} sau ${Math.round((Date.now() - startedAt) / 1000)} s`);
-      results.push({ ...ch, mp3, sizeBytes: fs.statSync(mp3).size, durationSec });
-    }
+      log(`Task ${taskId}: xong chương ${i + 1}/${chapters.length} sau ${Math.round((Date.now() - startedAt) / 1000)} s`);
+      results.push({ ...ch, mp3: items[i].out, sizeBytes: fs.statSync(items[i].out).size, durationSec });
+    };
+    await tts(config, items, ttsLog, onChapterDone);
+    if (results.length !== chapters.length) throw new Error(`TTS chỉ xong ${results.length}/${chapters.length} chương`);
 
     const total = results.reduce((s, r) => s + r.sizeBytes, 0);
     if (!(await backend.quotaOk(total))) {

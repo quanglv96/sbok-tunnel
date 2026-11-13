@@ -39,11 +39,12 @@ test('processJob gửi tiến độ chi tiết khi TTS; lỗi gửi tiến độ
   const deps = {
     runScan: async () => null,
     extractText: async () => ({ text: 'Một đoạn văn bản bất kỳ không có tiêu đề chương.', title: 'T', author: null }),
-    synthesize: async (config, txt, mp3, log) => {
+    synthesizeBatch: async (config, items, log, onDone) => {
+      log('[tts] chapter 1/1');
       log('[tts] chunk 1/2');
       log('[tts] chunk 2/2');
-      fs.writeFileSync(mp3, 'mp3');
-      return { durationSec: 1 };
+      fs.writeFileSync(items[0].out, 'mp3');
+      onDone(0, { durationSec: 1 });
     },
   };
 
@@ -58,4 +59,56 @@ test('processJob gửi tiến độ chi tiết khi TTS; lỗi gửi tiến độ
   assert.ok(details.includes('TTS_PROCESSING|Chương 1/1 · 100% · tổng 100%'));
   assert.ok(details.some((d) => d.includes('đang tải audio lên kho lưu trữ')));
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** TC-65: job 3 chương qua 1 lần gọi TTS; failAt = vị trí chương (từ 0) mà TTS giả thoát lỗi. */
+async function runBatchJob(failAt) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbok-batch-'));
+  const pdfPath = path.join(dir, 'a.pdf');
+  fs.writeFileSync(pdfPath, '%PDF-1.7');
+  const out = { calls: 0, details: [], completed: null, failed: null };
+  const backend = {
+    progress: async (taskId, stage, detail) => { out.details.push(detail ?? ''); },
+    quotaOk: async () => true,
+    complete: async (id, title, author, chapters) => { out.completed = chapters; },
+    failed: async (id, msg) => { out.failed = msg; },
+    violation: async () => assert.fail('không được violation'),
+  };
+  const text = [1, 2, 3].map((n) => `Chương ${n}\n${'Nội dung chương. '.repeat(20)}`).join('\n');
+  const deps = {
+    runScan: async () => null,
+    extractText: async () => ({ text, title: 'Sách', author: null }),
+    synthesizeBatch: async (config, items, log, onDone) => {
+      out.calls++;
+      for (let i = 0; i < items.length; i++) {
+        log(`[tts] chapter ${i + 1}/${items.length}`);
+        if (i === failAt) throw new Error('TTS thoát mã 1');
+        fs.writeFileSync(items[i].out, 'mp3');
+        onDone(i, { durationSec: 10 + i });
+      }
+    },
+  };
+  await processJob({ taskId: 't3', pdfPath, fileName: 'a.pdf' }, {
+    config: { jobsDir: path.join(dir, 'jobs'), cacheDir: path.join(dir, 'cache') },
+    backend, uploader: { upload: async () => {} }, log: () => {}, deps,
+  });
+  out.textDirGone = !fs.existsSync(path.join(dir, 'jobs', 't3'));
+  fs.rmSync(dir, { recursive: true, force: true });
+  return out;
+}
+
+test('TC-65: job 3 chương gọi TTS 1 lần, 3 MP3 kèm durationSec, tiến độ Chương i/3', async () => {
+  const r = await runBatchJob(-1);
+  assert.strictEqual(r.calls, 1);
+  assert.strictEqual(r.failed, null);
+  assert.deepStrictEqual(r.completed.map((c) => c.durationSec), [10, 11, 12]);
+  for (const n of [1, 2, 3]) assert.ok(r.details.some((d) => d.startsWith(`Chương ${n}/3 · 0% · tổng `)));
+});
+
+test('TC-65: chương 2 lỗi → FAILED, không complete, dọn file .txt', async () => {
+  const r = await runBatchJob(1);
+  assert.strictEqual(r.calls, 1);
+  assert.strictEqual(r.completed, null);
+  assert.strictEqual(r.failed, 'Xử lý thất bại');
+  assert.ok(r.textDirGone);
 });
