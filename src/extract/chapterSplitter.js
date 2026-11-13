@@ -26,14 +26,18 @@ function splitChapters(text) {
     const body = normalized.trim();
     return body ? [{ index: 1, title: 'Toàn bộ', text: body }] : [];
   }
-  const isTocEntry = (i) => {
-    const m = matches[i];
-    const next = i + 1 < matches.length ? matches[i + 1].index : normalized.length;
-    const short = normalized.slice(m.index + m[0].length, next).trim().length < TOC_BODY_MAX;
-    return short && matches.slice(i + 1).some((o) => headingKey(o) === headingKey(m));
+  // #147: mục lục bắt đầu ở tiêu đề đầu (thân ngắn, số chương lặp lại phía sau) và kéo tới trước tiêu đề đầu tiên
+  // trùng số chương đã có trong mục lục; dòng mục lục xuống dòng ("...(NHƯNG KHÔNG\nMẤT NIỀM TIN)") không thành chương.
+  const isTocStart = () => {
+    const next = matches.length > 1 ? matches[1].index : normalized.length;
+    const short = normalized.slice(matches[0].index + matches[0][0].length, next).trim().length < TOC_BODY_MAX;
+    return short && matches.slice(1).some((o) => headingKey(o) === headingKey(matches[0]));
   };
   let toc = 0;
-  while (toc < matches.length && isTocEntry(toc)) toc += 1;
+  if (isTocStart()) {
+    const seen = new Set();
+    while (toc < matches.length && !seen.has(headingKey(matches[toc]))) seen.add(headingKey(matches[toc++]));
+  }
   const introEnd = toc < matches.length ? matches[toc].index : normalized.length;
   // dòng ngắn không dấu câu (tên sách, tác giả, mục lục) thêm dấu chấm để TTS ngắt nghỉ
   const intro = normalized.slice(0, introEnd).split('\n')
@@ -44,8 +48,15 @@ function splitChapters(text) {
   if (intro) parts.push({ title: 'Giới thiệu', text: intro });
   matches.forEach((m, i) => {
     const end = i + 1 < matches.length ? matches[i + 1].index : normalized.length;
-    const body = normalized.slice(m.index + m[0].length, end).trim();
-    parts.push({ title: m[1].trim().slice(0, 500), text: body });
+    let title = m[1].trim();
+    let body = normalized.slice(m.index + m[0].length, end).trim();
+    // #147: tiêu đề in hoa xuống dòng ("CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA\nVĨ ĐẠI") -> nối dòng in hoa ngắn vào tiêu đề
+    const [first, ...rest] = body.split('\n');
+    if (title === title.toUpperCase() && first.length < 60 && first === first.toUpperCase() && /\p{L}/u.test(first)) {
+      title = `${title} ${first.trim()}`;
+      body = rest.join('\n').trim();
+    }
+    parts.push({ title: title.slice(0, 500), text: body });
   });
   return parts.filter((p) => p.text).map((p, i) => ({ index: i + 1, ...p }));
 }

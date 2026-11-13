@@ -14,6 +14,17 @@ function progressText(label, chapterRatio, doneChars, totalChars) {
 }
 
 /**
+ * #151: đầu mỗi chương đọc tên sách và tên chương. "Giới thiệu" đã có bìa (tên sách) nên đọc nguyên văn;
+ * "Toàn bộ" (không tách được chương) chỉ đọc tên sách.
+ */
+function spokenText(bookTitle, ch) {
+  if (ch.title === 'Giới thiệu') return ch.text;
+  const sentence = (s) => `${s.trim().replace(/[\s.:;,\-–—]+$/, '')}.`;
+  const head = ch.title === 'Toàn bộ' ? sentence(bookTitle) : `${sentence(bookTitle)} ${sentence(ch.title)}`;
+  return `${head}\n${ch.text}`;
+}
+
+/**
  * Xử lý 1 job: sandbox (BR-4) -> trích text + tách chương (BR-8) -> TTS từng chương -> kiểm quota -> đẩy R2 -> báo
  * backend. PDF và .txt tạm luôn bị xoá; MP3 trong cache chỉ xoá khi đã lên R2 (BR-10: lỗi R2 thì giữ để thử lại).
  */
@@ -37,6 +48,7 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
     await backend.progress(taskId, 'PARSING');
     const { text, title, author } = await extract(pdfPath);
     const chapters = splitChapters(text);
+    const bookTitle = (title || fileName.replace(/\.pdf$/i, '') || 'Không tên').slice(0, 500);
     log(`Task ${taskId}: ${text.length} ký tự, ${chapters.length} chương`);
     if (chapters.length === 0) {
       await backend.failed(taskId, 'Không trích được chữ từ PDF (có thể là ảnh scan)');
@@ -54,7 +66,7 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
     for (const ch of chapters) {
       const txt = path.join(textDir, `${ch.index}.txt`);
       const mp3 = path.join(mp3Dir, `${ch.index}.mp3`);
-      fs.writeFileSync(txt, ch.text, 'utf8');
+      fs.writeFileSync(txt, spokenText(bookTitle, ch), 'utf8');
       const label = `Chương ${results.length + 1}/${chapters.length}`;
       log(`Task ${taskId}: TTS chương ${results.length + 1}/${chapters.length} (${ch.text.length} ký tự)`);
       await report(progressText(label, 0, doneChars, totalChars));
@@ -87,7 +99,6 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
       return;
     }
 
-    const bookTitle = (title || fileName.replace(/\.pdf$/i, '') || 'Không tên').slice(0, 500);
     await backend.complete(taskId, bookTitle, author ? author.slice(0, 300) : null, results.map((r) => ({
       index: r.index, title: r.title, r2Key: r.r2Key, sizeBytes: r.sizeBytes, durationSec: r.durationSec,
     })));
@@ -102,4 +113,4 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
   }
 }
 
-module.exports = { processJob, progressText };
+module.exports = { processJob, progressText, spokenText };

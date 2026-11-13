@@ -5,7 +5,15 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { processJob, progressText } = require('../src/pipeline');
+const { processJob, progressText, spokenText } = require('../src/pipeline');
+
+test('spokenText: đầu chương đọc tên sách + tên chương; Giới thiệu giữ nguyên; Toàn bộ chỉ tên sách (#151)', () => {
+  assert.strictEqual(spokenText('Từ tốt đến vĩ đại', { title: 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI', text: 'Nội dung.' }),
+    'Từ tốt đến vĩ đại. CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI.\nNội dung.');
+  assert.strictEqual(spokenText('Sách.', { title: 'Chương 2 -', text: 'X' }), 'Sách. Chương 2.\nX');
+  assert.strictEqual(spokenText('Sách', { title: 'Giới thiệu', text: 'Bìa' }), 'Bìa');
+  assert.strictEqual(spokenText('Sách', { title: 'Toàn bộ', text: 'X' }), 'Sách.\nX');
+});
 
 test('progressText: phần trăm chương và tổng, chặn ở 100 (#133)', () => {
   assert.strictEqual(progressText('Chương 2/5', 0.4, 25, 100), 'Chương 2/5 · 40% · tổng 25%');

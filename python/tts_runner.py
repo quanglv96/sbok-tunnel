@@ -19,18 +19,18 @@ DEFAULT_VOICE = "Thiện Minh"  # Nam · Bắc · Phong cách kể chuyện (pre
 
 
 def chunks(text):
-    """Cắt theo câu, mỗi đoạn ≤ MAX_CHUNK ký tự (TTS ổn định hơn với câu ngắn)."""
-    buf = ""
+    """Mỗi câu một đoạn (#147: không gộp nhiều câu, để khoảng lặng nằm giữa mọi câu).
+
+    Câu dài hơn MAX_CHUNK cắt ở dấu phẩy, không được thì ở khoảng trắng gần nhất, cuối cùng mới cắt cứng.
+    """
     for sentence in re.split(r"(?<=[.!?…;:])\s+", re.sub(r"\s+", " ", text).strip()):
-        if len(buf) + len(sentence) + 1 > MAX_CHUNK and buf:
-            yield buf
-            buf = ""
         while len(sentence) > MAX_CHUNK:
-            yield sentence[:MAX_CHUNK]
-            sentence = sentence[MAX_CHUNK:]
-        buf = f"{buf} {sentence}".strip()
-    if buf:
-        yield buf
+            cut = sentence.rfind(", ", 0, MAX_CHUNK) + 1 or sentence.rfind(" ", 0, MAX_CHUNK)
+            cut = cut if cut > 0 else MAX_CHUNK
+            yield sentence[:cut].strip()
+            sentence = sentence[cut:].strip()
+        if sentence:
+            yield sentence
 
 
 def use_real_files_in_hf_cache():

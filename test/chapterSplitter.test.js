@@ -58,6 +58,26 @@ test('#135: bìa + mục lục gộp 1 chương "Giới thiệu", bỏ số tran
   assert.strictEqual(chapters[0].text, 'Nhà Giả Kim.\nPaulo Coelho.\nMục lục.\nChương 1: Khởi đầu.\nChương 2.');
 });
 
+test('#147: mục lục xuống dòng, chương không lặp lại, dòng cuối mục lục thân dài -> gộp hết vào "Giới thiệu"', () => {
+  const long = 'Nội dung dài. '.repeat(20);
+  const chapters = splitChapters([
+    'MỤC LỤC',
+    'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI',
+    'CHƯƠNG BA: ĐỐI DIỆN SỰ THẬT (NHƯNG KHÔNG',
+    'MẤT NIỀM TIN)',
+    'CHƯƠNG BỐN: KHÁI NIỆM CON NHÍM',
+    'CHƯƠNG CHÍN: TỪ XÂY DỰNG ĐỂ TRƯỜNG',
+    'TỒN',
+    `GIỚI THIỆU\n${long}`,
+    'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA',
+    'VĨ ĐẠI',
+    long,
+  ].join('\n'));
+  assert.deepStrictEqual(chapters.map((c) => c.title), ['Giới thiệu', 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI']);
+  assert.match(chapters[0].text, /MẤT NIỀM TIN\)/);
+  assert.strictEqual(chapters[1].text, long.trim());
+});
+
 test('#135: sách nhiều phần lặp số chương (thân dài) không bị coi là mục lục', () => {
   const long = 'Nội dung dài. '.repeat(20);
   const chapters = splitChapters(`Chương 1\n${long}\nChương 1\n${long}`);
