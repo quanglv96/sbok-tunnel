@@ -15,6 +15,7 @@ import tempfile
 ALLOWED_BITRATES = {"64k", "96k", "128k"}
 MAX_CHUNK = 200  # #135: đoạn ngắn hơn để chèn khoảng lặng giữa các câu
 SAMPLE_RATES = {"": 48000, "v3nano": 24000}
+DEFAULT_VOICE = "Thiện Minh"  # Nam · Bắc · Phong cách kể chuyện (preset nổi bật của v3 Turbo)
 
 
 def chunks(text):
@@ -113,6 +114,11 @@ def main():
     if args.prefetch:
         write_api_info(tts)
         return
+    # #145: giọng preset của SDK (list_preset_voices -> (nhãn, tên)); mặc định giọng kể chuyện
+    voice = os.environ.get("SBOK_TTS_VOICE", "").strip() or DEFAULT_VOICE
+    names = [name for _label, name in tts.list_preset_voices()]
+    if voice not in names:
+        sys.exit(f"SBOK_TTS_VOICE không có trong giọng preset: {voice}. Hợp lệ: {', '.join(names)}")
     with open(args.src, encoding="utf-8") as f:
         text = f.read()
 
@@ -123,7 +129,7 @@ def main():
     for i, part in enumerate(parts, 1):
         if pieces:
             pieces.append(silence)
-        pieces.append(np.asarray(tts.infer(part), dtype=np.float32))
+        pieces.append(np.asarray(tts.infer(part, voice=voice), dtype=np.float32))
         if i % step == 0 or i == len(parts):
             print(f"chunk {i}/{len(parts)}", file=sys.stderr, flush=True)  # ASCII: stderr có thể là cp1252
     if not pieces:
