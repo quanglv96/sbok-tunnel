@@ -104,7 +104,15 @@ function fakeMachine(dataDir, has) {
   const py = path.join(rt, 'python', 'python.exe');
   const ff = path.join(rt, 'ffmpeg', 'bin', 'ffmpeg.exe');
   const downloads = [];
-  const run = async (cmd, args) => {
+  const run = async (cmd, args, opts = {}) => {
+    if (args.includes('--prefetch')) {
+      // #129: offline chỉ đạt khi model đã có; online thì "tải" model
+      if (opts.env?.HF_HUB_OFFLINE !== '1') {
+        downloads.push('model');
+        if (!has.has('model-fail')) has.add('model');
+      }
+      return { ok: has.has('model'), out: 'model' };
+    }
     if (cmd === 'tar') {
       has.add(args.includes('--strip-components=1') ? `${ff} -version` : `${py} --version`);
       return { ok: true, out: '' };
@@ -125,10 +133,26 @@ test('TC-47/TC-49: lần khởi động sau, runtime trong thư mục data đủ
   const dataDir = tmp('sbok-rt-');
   const has = new Set();
   const m = fakeMachine(dataDir, has);
-  has.add(`${m.py} -c ${TTS_IMPORT}`).add(`${m.ff} -version`);
+  has.add(`${m.py} -c ${TTS_IMPORT}`).add(`${m.ff} -version`).add('model');
   const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl } });
   assert.deepStrictEqual(r, { pythonPath: m.py, ffmpegPath: m.ff, errors: [] });
   assert.deepStrictEqual(m.downloads, []);
+});
+
+test('#129: chưa có model → tải lúc cài; tải lỗi → errors (không nhận job)', async () => {
+  const dataDir = tmp('sbok-rt-');
+  const has = new Set();
+  const m = fakeMachine(dataDir, has);
+  has.add(`${m.py} -c ${TTS_IMPORT}`).add(`${m.ff} -version`);
+  const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl } });
+  assert.deepStrictEqual(r.errors, []);
+  assert.deepStrictEqual(m.downloads, ['model']);
+
+  const has2 = new Set(['model-fail']);
+  const m2 = fakeMachine(dataDir, has2);
+  has2.add(`${m2.py} -c ${TTS_IMPORT}`).add(`${m2.ff} -version`);
+  const r2 = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m2.run, download: m2.dl } });
+  assert.match(r2.errors[0], /Model VieNeu-TTS/);
 });
 
 test('#109: Python/ffmpeg ở PATH chạy được vẫn bị bỏ qua → cài vào {dataDir}/runtime', async () => {
@@ -138,14 +162,14 @@ test('#109: Python/ffmpeg ở PATH chạy được vẫn bị bỏ qua → cài 
   const m = fakeMachine(dataDir, new Set([`python -c ${TTS_IMPORT}`, 'ffmpeg -version']));
   const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl, requirementsFile: req } });
   assert.deepStrictEqual(r, { pythonPath: m.py, ffmpegPath: m.ff, errors: [] });
-  assert.deepStrictEqual(m.downloads, [MANIFEST.python.name, MANIFEST.getPip.name, MANIFEST.ffmpeg.name]);
+  assert.deepStrictEqual(m.downloads, [MANIFEST.python.name, MANIFEST.getPip.name, MANIFEST.ffmpeg.name, 'model']);
 });
 
 test('chỉ thiếu ffmpeg trong runtime → chỉ cài ffmpeg vào {dataDir}/runtime', async () => {
   const dataDir = tmp('sbok-rt-');
   const has = new Set();
   const m = fakeMachine(dataDir, has);
-  has.add(`${m.py} -c ${TTS_IMPORT}`);
+  has.add(`${m.py} -c ${TTS_IMPORT}`).add('model');
   const r = await ensureRuntime({ dataDir, log: () => {}, deps: { run: m.run, download: m.dl } });
   assert.deepStrictEqual(r, { pythonPath: m.py, ffmpegPath: m.ff, errors: [] });
   assert.deepStrictEqual(m.downloads, [MANIFEST.ffmpeg.name]);

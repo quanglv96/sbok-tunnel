@@ -36,6 +36,7 @@ const MANIFEST = {
 
 const PYPI_INDEX = 'https://pypi.org/simple';
 const REQUIREMENTS = path.join(__dirname, '..', 'python', 'requirements-runtime.txt');
+const TTS_SCRIPT = path.join(__dirname, '..', 'python', 'tts_runner.py');
 const MAX_REDIRECTS = 5;
 
 function exec(cmd, args, { env, timeout = 30_000 } = {}) {
@@ -164,7 +165,7 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
   const run = deps.run || exec;
   const dlRaw = deps.download || download;
   // Tiến độ cho UI: bước step/STEPS; received/total byte khi tải file, total = 0 là chưa biết (thanh chạy vô định)
-  const STEPS = 4;
+  const STEPS = 5;
   const progress = (step, label, received = 0, total = 0) => onProgress({ step, steps: STEPS, label, received, total });
   const dl = (step, item, dest) =>
     dlRaw(item, dest, undefined, (received, total) => progress(step, `Tải ${item.name}`, received, total));
@@ -222,10 +223,24 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
     }
   }
 
+  // #129: model tải sẵn vào {dataDir}/runtime/hf lúc cài, job không gọi HF Hub. Kiểm offline trước, thiếu mới tải.
+  if (pythonPath) {
+    try {
+      const prefetch = [TTS_SCRIPT, '--prefetch'];
+      if (!(await run(pythonPath, prefetch, { env: { ...env, HF_HUB_OFFLINE: '1' }, timeout: 0 })).ok) {
+        log('[setup] Đang tải model VieNeu-TTS vào ' + env.HF_HOME);
+        progress(5, 'Tải model VieNeu-TTS (chỉ lần đầu, có thể mất nhiều phút)');
+        await must(run(pythonPath, prefetch, { env, timeout: 0 }), 'Tải model');
+      }
+    } catch (err) {
+      errors.push(`Model VieNeu-TTS: ${err.message}`);
+    }
+  }
+
   return { pythonPath, ffmpegPath, errors };
 }
 
 module.exports = {
-  ALLOWED_HOSTS, MANIFEST, PYPI_INDEX, REQUIREMENTS, TTS_IMPORT,
+  ALLOWED_HOSTS, MANIFEST, PYPI_INDEX, REQUIREMENTS, TTS_IMPORT, TTS_SCRIPT,
   download, ensureRuntime, firstWorking, pipInstallArgs, readRequirements, runtimeEnv,
 };

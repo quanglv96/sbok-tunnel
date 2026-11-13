@@ -56,11 +56,14 @@ def use_real_files_in_hf_cache():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--in", dest="src", required=True)
-    parser.add_argument("--out", dest="dst", required=True)
+    parser.add_argument("--in", dest="src")
+    parser.add_argument("--out", dest="dst")
+    parser.add_argument("--prefetch", action="store_true", help="chỉ tải/nạp model vào HF_HOME rồi thoát (#129)")
     parser.add_argument("--bitrate", default="96k")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     args = parser.parse_args()
+    if not args.prefetch and not (args.src and args.dst):
+        parser.error("cần --in và --out (hoặc --prefetch)")
     if args.bitrate not in ALLOWED_BITRATES:
         sys.exit(f"bitrate phải thuộc {sorted(ALLOWED_BITRATES)}")
     mode = os.environ.get("VIENEU_MODEL", "").strip()
@@ -72,6 +75,8 @@ def main():
 
     use_real_files_in_hf_cache()
     tts = Vieneu(mode=mode) if mode else Vieneu()
+    if args.prefetch:
+        return
     with open(args.src, encoding="utf-8") as f:
         text = f.read()
 

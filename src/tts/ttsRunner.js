@@ -9,7 +9,7 @@ const SCRIPT = path.join(__dirname, '..', '..', 'python', 'tts_runner.py');
 function synthesize({ pythonPath, ffmpegPath, mp3Bitrate }, textPath, mp3Path, log = console.log) {
   return new Promise((resolve, reject) => {
     const child = spawn(pythonPath, [SCRIPT, '--in', textPath, '--out', mp3Path, '--bitrate', mp3Bitrate,
-      '--ffmpeg', ffmpegPath], { windowsHide: true });
+      '--ffmpeg', ffmpegPath], { windowsHide: true, env: { ...process.env, HF_HUB_OFFLINE: '1' } });
     let stdout = '';
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => log(`[tts] ${String(d).trim()}`));
