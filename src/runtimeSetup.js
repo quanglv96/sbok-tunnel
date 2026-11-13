@@ -73,7 +73,7 @@ function assertAllowed(url) {
 }
 
 /** Tải 1 mục manifest: chỉ https + host allowlist (kiểm lại ở mỗi redirect); có SHA-256 ghim mà sai thì xoá file. */
-async function download(item, dest, get = httpsGet) {
+async function download(item, dest, get = httpsGet, onProgress = () => {}) {
   if (!item.url) throw new Error(`${item.name}: chưa có nguồn trong app, không cài`);
   let url = item.url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -90,10 +90,21 @@ async function download(item, dest, get = httpsGet) {
     }
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     const hash = crypto.createHash('sha256');
+    const total = Number(res.headers['content-length']) || 0;
+    let received = 0;
+    let lastPct = -1;
+    onProgress(0, total);
     try {
       await pipeline(res, async function* (src) {
         for await (const chunk of src) {
           hash.update(chunk);
+          received += chunk.length;
+          // Báo theo từng 1 % (không biết dung lượng thì mỗi 1 MB) để không dội IPC
+          const pct = total ? Math.floor((received * 100) / total) : Math.floor(received / 1048576);
+          if (pct !== lastPct) {
+            lastPct = pct;
+            onProgress(received, total);
+          }
           yield chunk;
         }
       }, fs.createWriteStream(dest));
@@ -149,9 +160,14 @@ async function must(promise, what) {
  * ngoài thư mục data); thiếu/hỏng cái nào thì tự cài cái đó vào đó. Gọi ở mọi lần khởi động.
  * Trả { pythonPath, ffmpegPath, errors } (path null = chưa dùng được).
  */
-async function ensureRuntime({ dataDir, log = console.log, deps = {} }) {
+async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}, deps = {} }) {
   const run = deps.run || exec;
-  const dl = deps.download || download;
+  const dlRaw = deps.download || download;
+  // Tiến độ cho UI: bước step/STEPS; received/total byte khi tải file, total = 0 là chưa biết (thanh chạy vô định)
+  const STEPS = 4;
+  const progress = (step, label, received = 0, total = 0) => onProgress({ step, steps: STEPS, label, received, total });
+  const dl = (step, item, dest) =>
+    dlRaw(item, dest, undefined, (received, total) => progress(step, `Tải ${item.name}`, received, total));
   const reqFile = deps.requirementsFile || REQUIREMENTS;
   const rt = path.join(dataDir, 'runtime');
   const env = runtimeEnv(dataDir);
@@ -166,18 +182,21 @@ async function ensureRuntime({ dataDir, log = console.log, deps = {} }) {
       if (readRequirements(reqFile).length === 0) throw new Error('chưa có danh sách gói pip ghim trong app');
       if (!(await ok(runtimePy, ['--version']))) {
         log('[setup] Đang cài Python vào ' + pyDir);
-        const zip = await dl(MANIFEST.python, path.join(rt, 'downloads', 'python.zip'));
+        const zip = await dl(1, MANIFEST.python, path.join(rt, 'downloads', 'python.zip'));
+        progress(1, 'Giải nén Python');
         fs.mkdirSync(pyDir, { recursive: true });
         await must(run('tar', ['-xf', zip, '-C', pyDir], { env, timeout: 0 }), 'Giải nén Python');
         enableSite(pyDir);
       }
       if (!(await ok(runtimePy, ['-m', 'pip', '--version']))) {
         log('[setup] Đang cài pip');
-        const getPip = await dl(MANIFEST.getPip, path.join(rt, 'downloads', 'get-pip.py'));
+        const getPip = await dl(2, MANIFEST.getPip, path.join(rt, 'downloads', 'get-pip.py'));
+        progress(2, 'Cài pip');
         await must(run(runtimePy, [getPip, '--isolated', '--no-input', '--no-cache-dir', '--index-url', PYPI_INDEX,
           '--no-setuptools', '--no-wheel', `pip==${PIP_VERSION}`], { env, timeout: 0 }), 'Cài pip');
       }
       log('[setup] Đang cài VieNeu-TTS và thư viện (có thể mất nhiều phút)');
+      progress(3, 'Tải và cài VieNeu-TTS + thư viện pip (có thể mất nhiều phút)');
       await must(run(runtimePy, pipInstallArgs(reqFile), { env, timeout: 0 }), 'Cài gói pip');
       if (!(await ok(runtimePy, ['-c', TTS_IMPORT]))) throw new Error('đã cài nhưng không import được VieNeu-TTS');
       pythonPath = runtimePy;
@@ -192,7 +211,8 @@ async function ensureRuntime({ dataDir, log = console.log, deps = {} }) {
   if (!ffmpegPath) {
     try {
       log('[setup] Đang cài ffmpeg vào ' + ffDir);
-      const zip = await dl(MANIFEST.ffmpeg, path.join(rt, 'downloads', 'ffmpeg.zip'));
+      const zip = await dl(4, MANIFEST.ffmpeg, path.join(rt, 'downloads', 'ffmpeg.zip'));
+      progress(4, 'Giải nén ffmpeg');
       fs.mkdirSync(ffDir, { recursive: true });
       await must(run('tar', ['-xf', zip, '-C', ffDir, '--strip-components=1'], { env, timeout: 0 }), 'Giải nén ffmpeg');
       if (!(await ok(runtimeFf, ['-version']))) throw new Error('đã giải nén nhưng ffmpeg không chạy');

@@ -27,6 +27,18 @@ test('TC-48: SHA-256 đúng → ghi file; sai → xoá file, lỗi', async () =>
   assert.ok(!fs.existsSync(bad));
 });
 
+test('#119: download báo tiến độ received/total theo content-length; không có content-length → total 0', async () => {
+  const seen = [];
+  const dest = path.join(tmp('sbok-dl-'), 'f.zip');
+  await download(item, dest, async () => reply(200, 'abc', { 'content-length': '3' }), (r, t) => seen.push([r, t]));
+  assert.deepStrictEqual(seen[0], [0, 3]);
+  assert.deepStrictEqual(seen.at(-1), [3, 3]);
+
+  const noLen = [];
+  await download(item, dest, async () => reply(200, 'abc'), (r, t) => noLen.push([r, t]));
+  assert.ok(noLen.every(([, t]) => t === 0));
+});
+
 test('TC-53: http, host ngoài allowlist, redirect ra ngoài → từ chối trước khi ghi file', async () => {
   const dest = path.join(tmp('sbok-dl-'), 'f.zip');
   const calls = [];

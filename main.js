@@ -16,7 +16,8 @@ const { processJob } = require('./src/pipeline');
 const envFile = loadEnvFile([process.cwd(), path.dirname(process.execPath)]);
 let config = null;
 // setup: checking | installing | ok | error (BR-15: đang kiểm/cài thì vàng, không nhận job)
-const state = { checks: [], ready: false, setup: 'checking', dataDir: '', tunnel: 'STOPPED', logs: [] };
+// progress: null | { step, steps, label, received, total } – thanh tiến độ tải/cài thư viện (#119)
+const state = { checks: [], ready: false, setup: 'checking', dataDir: '', tunnel: 'STOPPED', logs: [], progress: null };
 let preparing = null;
 let win = null;
 let tray = null;
@@ -32,8 +33,8 @@ function log(line) {
 
 function pushState() {
   if (win) {
-    const { checks, ready, setup, dataDir, tunnel } = state;
-    win.webContents.send('sbok:state', { checks, ready, setup, dataDir, tunnel });
+    const { checks, ready, setup, dataDir, tunnel, progress } = state;
+    win.webContents.send('sbok:state', { checks, ready, setup, dataDir, tunnel, progress });
   }
 }
 
@@ -56,7 +57,12 @@ function prepare() {
     pushState();
     const file = settingsFile();
     const settings = readSettings(file);
-    const rt = await ensureRuntime({ dataDir: state.dataDir, log });
+    const onProgress = (p) => {
+      state.progress = p;
+      pushState();
+    };
+    const rt = await ensureRuntime({ dataDir: state.dataDir, log, onProgress });
+    state.progress = null;
     // #109: không rơi về PATH; thiếu thì trỏ vào bản trong {dataDir}/runtime để startup check báo đỏ
     const rtDir = path.join(state.dataDir, 'runtime');
     config.pythonPath = rt.pythonPath || path.join(rtDir, 'python', 'python.exe');
@@ -81,6 +87,7 @@ function prepare() {
     log(`[setup] lỗi: ${err.message}`);
   }).finally(() => {
     preparing = null;
+    state.progress = null;
     pushState();
   });
   return preparing;

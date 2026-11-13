@@ -16,6 +16,10 @@
   <p>Tunnel: <b id="tunnel">-</b> · Nhận job: <b id="ready">-</b></p>
   <p>Thư mục data: <span id="dataDir">-</span></p>
   <p><button id="recheck">Kiểm tra lại</button> <button id="changeDir">Đổi thư mục data</button></p>
+  <div id="progressBox" hidden>
+    <div id="progressLabel"></div>
+    <progress id="progressBar" max="100" style="width: 100%"></progress>
+  </div>
   <table id="checks"></table>
   <h3>Log</h3>
   <pre id="log"></pre>
@@ -29,6 +33,7 @@
       el('dataDir').textContent = s.dataDir || '-';
       el('recheck').textContent = s.setup === 'error' ? 'Thử lại' : 'Kiểm tra lại';
       el('recheck').disabled = busy;
+      renderProgress(s.progress);
       el('checks').replaceChildren(...s.checks.map((c) => {
         const tr = document.createElement('tr');
         for (const [text, cls] of [[c.ok ? '✔' : '✘', c.ok ? 'ok' : 'bad'], [c.name], [c.detail]]) {
@@ -39,6 +44,22 @@
         }
         return tr;
       }));
+    }
+    const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
+    // #119: total > 0 → % theo byte; total = 0 (pip, giải nén, chưa biết dung lượng) → thanh chạy vô định
+    function renderProgress(p) {
+      el('progressBox').hidden = !p;
+      if (!p) return;
+      const bar = el('progressBar');
+      let text = `Bước ${p.step}/${p.steps}: ${p.label}`;
+      if (p.total > 0) {
+        bar.value = Math.floor((p.received * 100) / p.total);
+        text += ` – ${mb(p.received)} / ${mb(p.total)} (${bar.value}%)`;
+      } else {
+        bar.removeAttribute('value');
+        if (p.received > 0) text += ` – ${mb(p.received)}`;
+      }
+      el('progressLabel').textContent = text;
     }
     function append(line) {
       const pre = el('log');
