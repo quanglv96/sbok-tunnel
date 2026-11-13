@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 ALLOWED_BITRATES = {"64k", "96k", "128k"}
-MAX_CHUNK = 400
+MAX_CHUNK = 200  # #135: đoạn ngắn hơn để chèn khoảng lặng giữa các câu
 SAMPLE_RATES = {"": 48000, "v3nano": 24000}
 
 
@@ -69,6 +69,14 @@ def main():
     mode = os.environ.get("VIENEU_MODEL", "").strip()
     if mode not in SAMPLE_RATES:
         sys.exit(f"VIENEU_MODEL phải để trống (v3 Turbo) hoặc là v3nano, nhận: {mode}")
+    # #135: tốc độ đọc (atempo của ffmpeg, giữ cao độ) và khoảng lặng giữa các đoạn
+    try:
+        speed = float(os.environ.get("SBOK_TTS_SPEED", "").strip() or "0.9")
+        pause_ms = int(os.environ.get("SBOK_TTS_PAUSE_MS", "").strip() or "400")
+    except ValueError:
+        sys.exit("SBOK_TTS_SPEED phải là số (0.7-1.2), SBOK_TTS_PAUSE_MS phải là số nguyên (0-2000)")
+    if not (0.7 <= speed <= 1.2 and 0 <= pause_ms <= 2000):
+        sys.exit("SBOK_TTS_SPEED phải trong 0.7-1.2, SBOK_TTS_PAUSE_MS trong 0-2000")
 
     import numpy as np
     from vieneu import Vieneu
@@ -83,7 +91,10 @@ def main():
     parts = list(chunks(text))
     step = max(1, len(parts) // 10)
     pieces = []
+    silence = np.zeros(int(SAMPLE_RATES[mode] * pause_ms / 1000), dtype=np.float32)
     for i, part in enumerate(parts, 1):
+        if pieces:
+            pieces.append(silence)
         pieces.append(np.asarray(tts.infer(part), dtype=np.float32))
         if i % step == 0 or i == len(parts):
             print(f"chunk {i}/{len(parts)}", file=sys.stderr, flush=True)  # ASCII: stderr có thể là cp1252
@@ -95,11 +106,11 @@ def main():
         wav = tmp.name
     try:
         tts.save(audio, wav)
-        subprocess.run([args.ffmpeg, "-y", "-loglevel", "error", "-i", wav, "-ac", "1", "-codec:a", "libmp3lame",
-                        "-b:a", args.bitrate, args.dst], check=True)
+        subprocess.run([args.ffmpeg, "-y", "-loglevel", "error", "-i", wav, "-filter:a", f"atempo={speed}", "-ac", "1",
+                        "-codec:a", "libmp3lame", "-b:a", args.bitrate, args.dst], check=True)
     finally:
         os.remove(wav)
-    print(json.dumps({"durationSec": int(round(len(audio) / SAMPLE_RATES[mode]))}))
+    print(json.dumps({"durationSec": int(round(len(audio) / SAMPLE_RATES[mode] / speed))}))
 
 
 if __name__ == "__main__":
