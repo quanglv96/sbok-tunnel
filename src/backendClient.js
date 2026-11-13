@@ -19,7 +19,7 @@ function createBackendClient({ backendUrl, workerToken }, { fetchImpl = fetch, l
   }
 
   return {
-    progress: (taskId, stage) => post('progress', { taskId, stage }),
+    progress: (taskId, stage, detail) => post('progress', { taskId, stage, detail }),
     complete: (taskId, title, author, chapters) => post('complete', { taskId, title, author, chapters }),
     violation: (taskId, violation) => post('violation', { taskId, violation }),
     failed: (taskId, message) => post('failed', { taskId, message }),

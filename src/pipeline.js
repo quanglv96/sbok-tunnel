@@ -7,6 +7,12 @@ const { extractText } = require('./extract/pdfText');
 const { splitChapters } = require('./extract/chapterSplitter');
 const { synthesize } = require('./tts/ttsRunner');
 
+/** "Chương 2/5 · 40% · tổng 25%": tiến độ chương hiện tại và cả sách (theo số ký tự). */
+function progressText(label, chapterRatio, doneChars, totalChars) {
+  const pct = (r) => Math.min(100, Math.floor(r * 100));
+  return `${label} · ${pct(chapterRatio)}% · tổng ${pct(totalChars ? doneChars / totalChars : 0)}%`;
+}
+
 /**
  * Xử lý 1 job: sandbox (BR-4) -> trích text + tách chương (BR-8) -> TTS từng chương -> kiểm quota -> đẩy R2 -> báo
  * backend. PDF và .txt tạm luôn bị xoá; MP3 trong cache chỉ xoá khi đã lên R2 (BR-10: lỗi R2 thì giữ để thử lại).
@@ -37,7 +43,11 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
       return;
     }
 
-    await backend.progress(taskId, 'TTS_PROCESSING');
+    // #133: báo người dùng đang ở chương nào, bao nhiêu %; lỗi gửi tiến độ không được làm hỏng job
+    const report = (detail) => backend.progress(taskId, 'TTS_PROCESSING', detail).catch(() => {});
+    const totalChars = chapters.reduce((s, c) => s + c.text.length, 0);
+    let doneChars = 0;
+    await backend.progress(taskId, 'TTS_PROCESSING', `${chapters.length} chương, ${totalChars} ký tự`);
     fs.mkdirSync(textDir, { recursive: true });
     fs.mkdirSync(mp3Dir, { recursive: true });
     const results = [];
@@ -45,9 +55,17 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
       const txt = path.join(textDir, `${ch.index}.txt`);
       const mp3 = path.join(mp3Dir, `${ch.index}.mp3`);
       fs.writeFileSync(txt, ch.text, 'utf8');
+      const label = `Chương ${results.length + 1}/${chapters.length}`;
       log(`Task ${taskId}: TTS chương ${results.length + 1}/${chapters.length} (${ch.text.length} ký tự)`);
+      await report(progressText(label, 0, doneChars, totalChars));
       const startedAt = Date.now();
-      const { durationSec } = await tts(config, txt, mp3, log);
+      const ttsLog = (line) => {
+        log(line);
+        const m = /chunk (\d+)\/(\d+)/.exec(line);
+        if (m) void report(progressText(label, m[1] / m[2], doneChars + (ch.text.length * m[1]) / m[2], totalChars));
+      };
+      const { durationSec } = await tts(config, txt, mp3, ttsLog);
+      doneChars += ch.text.length;
       log(`Task ${taskId}: xong chương ${results.length + 1}/${chapters.length} sau ${Math.round((Date.now() - startedAt) / 1000)} s`);
       results.push({ ...ch, mp3, sizeBytes: fs.statSync(mp3).size, durationSec });
     }
@@ -57,6 +75,7 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
       await backend.failed(taskId, 'Kho lưu trữ đã đầy, tạm ngưng nhận sách mới');
       return;
     }
+    await report(`Đã đọc xong ${results.length} chương, đang tải audio lên kho lưu trữ`);
     try {
       for (const r of results) {
         r.r2Key = `books/${taskId}/${r.index}.mp3`;
@@ -83,4 +102,4 @@ async function processJob(job, { config, backend, uploader, log = console.log, d
   }
 }
 
-module.exports = { processJob };
+module.exports = { processJob, progressText };
