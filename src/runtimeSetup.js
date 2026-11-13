@@ -58,6 +58,9 @@ function runtimeEnv(dataDir, env = process.env) {
     if (!/^(PIP_|PYTHON)/i.test(k)) out[k] = v;
   }
   out.HF_HOME = path.join(dataDir, 'runtime', 'hf');
+  // Windows mặc định cp1252: gói có setup/README UTF-8 làm pip lỗi UnicodeDecodeError (#117). Ép UTF-8 mode.
+  out.PYTHONUTF8 = '1';
+  out.PYTHONIOENCODING = 'utf-8';
   return out;
 }
 

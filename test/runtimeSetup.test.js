@@ -76,7 +76,9 @@ test('TC-54: lệnh pip cố định PyPI, -r; env bỏ PIP_*/PYTHON*; file ch�
   assert.strictEqual(args[args.indexOf('-r') + 1], REQUIREMENTS);
 
   const env = runtimeEnv('D:\\data', { PIP_INDEX_URL: 'https://evil', PIP_EXTRA_INDEX_URL: 'x', PYTHONPATH: 'x', PATH: 'p' });
-  assert.deepStrictEqual(Object.keys(env).sort(), ['HF_HOME', 'PATH']);
+  assert.deepStrictEqual(Object.keys(env).sort(), ['HF_HOME', 'PATH', 'PYTHONIOENCODING', 'PYTHONUTF8']);
+  assert.strictEqual(env.PYTHONUTF8, '1');
+  assert.strictEqual(runtimeEnv('D:\\data', { PYTHONUTF8: '0' }).PYTHONUTF8, '1');
   assert.strictEqual(env.HF_HOME, path.join('D:\\data', 'runtime', 'hf'));
 
   const lines = readRequirements();
