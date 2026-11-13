@@ -12,6 +12,31 @@ test('TC-24: "Chương 1", "Chương 2" -> 2 chương', () => {
   ]);
 });
 
+test('#139: số chương bằng chữ/La Mã, chữ NFD, mục lục; câu văn "Chương hai trình bày" không phải tiêu đề', () => {
+  const text = [
+    'MỤC LỤC',
+    'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI ..... 9',
+    'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO ..... 30',
+    'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI'.normalize('NFD'),
+    'Nội dung một dài.',
+    'Chương hai trình bày về lãnh đạo.',
+    'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO',
+    'Nội dung hai.',
+    'Chương Mười Một',
+    'Nội dung mười một.',
+    'CHƯƠNG IV.',
+    'Nội dung bốn.',
+  ].join('\n');
+  assert.deepStrictEqual(splitChapters(text).map((c) => [c.index, c.title]), [
+    [1, 'Giới thiệu'],
+    [2, 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI'],
+    [3, 'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO'],
+    [4, 'Chương Mười Một'],
+    [5, 'CHƯƠNG IV.'],
+  ]);
+  assert.match(splitChapters(text)[1].text, /Chương hai trình bày/);
+});
+
 test('TC-25: không có tiêu đề chương -> 1 chương "Toàn bộ"', () => {
   assert.deepStrictEqual(splitChapters('Một câu chuyện ngắn.'), [{ index: 1, title: 'Toàn bộ', text: 'Một câu chuyện ngắn.' }]);
 });
