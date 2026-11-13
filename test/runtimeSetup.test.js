@@ -49,31 +49,39 @@ test('TC-53: http, host ngoài allowlist, redirect ra ngoài → từ chối tr�
   assert.strictEqual(ok[1], 'https://objects.githubusercontent.com/f');
 });
 
-test('mục manifest chưa ghim SHA-256 → không tải, báo lỗi', async () => {
+test('#115: mục không ghim SHA-256 → vẫn tải (allowlist vẫn áp dụng); không có url → không tải', async () => {
+  const dest = path.join(tmp('sbok-dl-'), 'f.zip');
+  await download({ ...item, sha256: '' }, dest, async () => reply(200, 'xyz'));
+  assert.strictEqual(fs.readFileSync(dest, 'utf8'), 'xyz');
+  await assert.rejects(download({ ...item, sha256: '', url: 'https://evil.example/x' }, dest, async () => reply(200)), /không được phép/);
   let called = false;
-  await assert.rejects(download({ ...item, sha256: '' }, 'x', async () => { called = true; }), /chưa ghim/);
+  await assert.rejects(download({ ...item, url: '' }, 'x', async () => { called = true; }), /chưa có nguồn/);
   assert.strictEqual(called, false);
 });
 
-const unpinned = Object.entries(MANIFEST).filter(([, m]) => !/^[0-9a-f]{64}$/.test(m.sha256)).map(([k]) => k);
-test('TC-53 (tĩnh): mọi mục manifest có host allowlist + sha256 64 hex', { todo: unpinned.length ? `chờ C-0a ghim: ${unpinned}` : false }, () => {
+test('TC-53 (tĩnh): mọi mục manifest có https + host allowlist + phiên bản; sha256 nếu có thì 64 hex', () => {
   for (const m of Object.values(MANIFEST)) {
+    assert.strictEqual(new URL(m.url).protocol, 'https:', m.name);
     assert.ok(ALLOWED_HOSTS.has(new URL(m.url).hostname), m.name);
-    assert.match(m.sha256, /^[0-9a-f]{64}$/, m.name);
+    assert.ok(m.version, m.name);
+    if (m.sha256) assert.match(m.sha256, /^[0-9a-f]{64}$/, m.name);
   }
 });
 
-test('TC-54: lệnh pip cố định PyPI, --no-deps, -r; env bỏ PIP_*/PYTHON*; file chỉ có dòng ghim ==', () => {
+test('TC-54: lệnh pip cố định PyPI, -r; env bỏ PIP_*/PYTHON*; file chỉ có dòng tên gói (ghim ==)', () => {
   const args = pipInstallArgs();
   assert.deepStrictEqual(args.slice(args.indexOf('--index-url'), args.indexOf('--index-url') + 2), ['--index-url', PYPI_INDEX]);
-  assert.ok(args.includes('--no-deps') && args.includes('--isolated') && args.includes('--no-cache-dir'));
+  assert.ok(args.includes('--isolated') && args.includes('--no-cache-dir'));
+  assert.ok(!args.some((a) => /extra-index|find-links|trusted-host/.test(a)));
   assert.strictEqual(args[args.indexOf('-r') + 1], REQUIREMENTS);
 
   const env = runtimeEnv('D:\\data', { PIP_INDEX_URL: 'https://evil', PIP_EXTRA_INDEX_URL: 'x', PYTHONPATH: 'x', PATH: 'p' });
   assert.deepStrictEqual(Object.keys(env).sort(), ['HF_HOME', 'PATH']);
   assert.strictEqual(env.HF_HOME, path.join('D:\\data', 'runtime', 'hf'));
 
-  for (const line of readRequirements()) assert.match(line, /^[A-Za-z0-9._-]+==[^\s=]+$/, line);
+  const lines = readRequirements();
+  assert.ok(lines.length > 0);
+  for (const line of lines) assert.match(line, /^[A-Za-z0-9._-]+(==[^\s=]+)?$/, line);
 });
 
 /** Máy giả: `has` là các lệnh đang chạy được; tar/pip "cài" thì thêm vào `has`. */
@@ -88,9 +96,9 @@ function fakeMachine(dataDir, has) {
       return { ok: true, out: '' };
     }
     if (args[0] && args[0].endsWith('get-pip.py')) has.add(`${py} -m pip --version`);
-    if (args.includes('--no-deps')) has.add(`${py} -c ${TTS_IMPORT}`);
+    if (args.includes('-r')) has.add(`${py} -c ${TTS_IMPORT}`);
     const key = `${cmd} ${args.join(' ')}`;
-    return { ok: has.has(key) || args[0]?.endsWith('get-pip.py') || args.includes('--no-deps'), out: key };
+    return { ok: has.has(key) || args[0]?.endsWith('get-pip.py') || args.includes('-r'), out: key };
   };
   const dl = async (m, dest) => {
     downloads.push(m.name);

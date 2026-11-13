@@ -20,14 +20,18 @@ const ALLOWED_HOSTS = new Set([
 ]);
 
 /**
- * File tải trực tiếp, ghim phiên bản + SHA-256 (C-0a). `url` hoặc `sha256` rỗng = chưa ghim → không cài, báo đỏ.
- * Không được điền URL/hash chưa xác minh.
+ * File tải trực tiếp, ghim phiên bản qua URL (#115, PMO chọn B). `sha256` tuỳ chọn: có thì bắt buộc khớp,
+ * rỗng thì không kiểm hash (vẫn chỉ HTTPS + allowlist). Không được điền hash chưa xác minh.
  */
+const PIP_VERSION = '24.3.1';
 const MANIFEST = {
   python: { name: 'Python embeddable win64', version: '3.11.9',
     url: 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip', sha256: '' },
-  getPip: { name: 'get-pip.py', version: '', url: '', sha256: '' },
-  ffmpeg: { name: 'ffmpeg win64', version: '', url: '', sha256: '' },
+  // get-pip.py chỉ là bộ cài; bản pip được ghim bằng tham số `pip==PIP_VERSION`.
+  getPip: { name: 'get-pip.py', version: PIP_VERSION, url: 'https://bootstrap.pypa.io/get-pip.py', sha256: '' },
+  // Bản build Windows chính thức ffmpeg.org trỏ tới (gyan.dev), release có tag cố định trên GitHub.
+  ffmpeg: { name: 'ffmpeg win64', version: '7.1',
+    url: 'https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip', sha256: '' },
 };
 
 const PYPI_INDEX = 'https://pypi.org/simple';
@@ -65,11 +69,9 @@ function assertAllowed(url) {
   return u;
 }
 
-/** Tải 1 mục manifest: chỉ https + host allowlist (kiểm lại ở mỗi redirect), sai SHA-256 thì xoá file. */
+/** Tải 1 mục manifest: chỉ https + host allowlist (kiểm lại ở mỗi redirect); có SHA-256 ghim mà sai thì xoá file. */
 async function download(item, dest, get = httpsGet) {
-  if (!item.url || !/^[0-9a-f]{64}$/.test(item.sha256)) {
-    throw new Error(`${item.name}: chưa ghim nguồn/SHA-256 trong app, không cài`);
-  }
+  if (!item.url) throw new Error(`${item.name}: chưa có nguồn trong app, không cài`);
   let url = item.url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const u = assertAllowed(url);
@@ -97,7 +99,7 @@ async function download(item, dest, get = httpsGet) {
       throw err;
     }
     const actual = hash.digest('hex');
-    if (actual !== item.sha256) {
+    if (item.sha256 && actual !== item.sha256) {
       fs.rmSync(dest, { force: true });
       throw new Error(`${item.name}: SHA-256 không khớp (nhận ${actual}), đã xoá file`);
     }
@@ -112,9 +114,9 @@ function readRequirements(file = REQUIREMENTS) {
   return lines.map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
 }
 
-/** Lệnh pip cố định: chỉ PyPI, không kéo gói ngoài danh sách (TC-54), không để cache pip ngoài thư mục data. */
+/** Lệnh pip cố định: chỉ PyPI, gói ghim trong file + gói kéo theo do pip giải (#115), không cache ngoài thư mục data. */
 function pipInstallArgs(file = REQUIREMENTS) {
-  return ['-m', 'pip', 'install', '--isolated', '--no-input', '--no-deps', '--no-cache-dir',
+  return ['-m', 'pip', 'install', '--isolated', '--no-input', '--no-cache-dir',
     '--index-url', PYPI_INDEX, '-r', file];
 }
 
@@ -170,7 +172,7 @@ async function ensureRuntime({ dataDir, log = console.log, deps = {} }) {
         log('[setup] Đang cài pip');
         const getPip = await dl(MANIFEST.getPip, path.join(rt, 'downloads', 'get-pip.py'));
         await must(run(runtimePy, [getPip, '--isolated', '--no-input', '--no-cache-dir', '--index-url', PYPI_INDEX,
-          '--no-setuptools', '--no-wheel'], { env, timeout: 0 }), 'Cài pip');
+          '--no-setuptools', '--no-wheel', `pip==${PIP_VERSION}`], { env, timeout: 0 }), 'Cài pip');
       }
       log('[setup] Đang cài VieNeu-TTS và thư viện (có thể mất nhiều phút)');
       await must(run(runtimePy, pipInstallArgs(reqFile), { env, timeout: 0 }), 'Cài gói pip');
