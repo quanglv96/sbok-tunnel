@@ -83,6 +83,32 @@ def write_api_info(tts):
         print(f"[prefetch] không ghi được vieneu-api.txt: {err}", file=sys.stderr)
 
 
+def disable_codec_arena(tts, ort=None):
+    """Tạo lại session codec decoder của SDK với enable_cpu_mem_arena=False.
+
+    vieneu 3.8.4 tạo mọi session ONNX với arena CPU bật; codec decoder nhận đầu vào dài ngắn khác nhau theo câu nên
+    arena nới dần tới khi `bad allocation`. Tìm object có `sess_codec_dec` + `_so` (thuộc tính nội bộ, sâu tối đa 3
+    tầng); không thấy hoặc lỗi thì ghi log và giữ session cũ (không làm hỏng job). Trả True nếu đã thay.
+    """
+    try:
+        if ort is None:
+            import onnxruntime as ort
+        level = [tts]
+        for _ in range(3):
+            for obj in level:
+                old = getattr(obj, "sess_codec_dec", None)
+                so = getattr(obj, "_so", None)
+                if old is not None and so is not None:
+                    so.enable_cpu_mem_arena = False
+                    obj.sess_codec_dec = ort.InferenceSession(old._model_path, so, providers=old.get_providers())
+                    return True
+            level = [v for o in level for v in getattr(o, "__dict__", {}).values() if hasattr(v, "__dict__")]
+        print("[tts] không thấy sess_codec_dec trong SDK, giữ arena mặc định", file=sys.stderr)
+    except Exception as err:
+        print(f"[tts] không tắt được arena của codec decoder: {err}", file=sys.stderr)
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--in", dest="src")
@@ -115,6 +141,7 @@ def main():
     if args.prefetch:
         write_api_info(tts)
         return
+    disable_codec_arena(tts)
     # #145: giọng preset của SDK (list_preset_voices -> (nhãn, tên)); mặc định giọng kể chuyện
     voice = os.environ.get("SBOK_TTS_VOICE", "").strip() or DEFAULT_VOICE
     names = [name for _label, name in tts.list_preset_voices()]
