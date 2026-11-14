@@ -2,5 +2,5 @@
 # Mỗi dòng `ten-goi==phien-ban` (hoặc `ten-goi` khi chưa xác định bản); pip tự cài gói kéo theo từ PyPI.
 # Cài bằng: pip install --isolated --no-input --no-cache-dir --index-url https://pypi.org/simple -r requirements-runtime.txt
 # File chưa có dòng gói nào thì app không cài VieNeu-TTS và báo đỏ.
-# TODO(PMO): thay bằng `vieneu==<bản>` theo `pip show vieneu` trên máy đã chạy được (#105).
-vieneu
+# vieneu: bản đã chạy được trên máy worker (PMO xác nhận #183, importlib.metadata.version).
+vieneu==3.8.4

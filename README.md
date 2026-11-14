@@ -23,7 +23,7 @@ nếu để trống thì không kiểm hash. Danh sách thư viện:
 | Python embeddable win64 | 3.11.9 | file tải | `www.python.org/ftp/python/3.11.9/` | tuỳ chọn |
 | pip (qua get-pip.py) | 24.3.1 | file tải + pip | `bootstrap.pypa.io` | tuỳ chọn |
 | ffmpeg win64 essentials (GyanD) | 7.1 | file tải | `github.com/GyanD/codexffmpeg/releases` | tuỳ chọn |
-| VieNeu-TTS (`vieneu`) + gói kéo theo | `python/requirements-runtime.txt` | pip | `pypi.org/simple` | pip kiểm |
+| VieNeu-TTS (`vieneu`) + gói kéo theo | 3.8.4 (`python/requirements-runtime.txt`) | pip | `pypi.org/simple` | pip kiểm |
 | Model VieNeu-TTS | do SDK chọn | tải lúc cài (prefetch) | `huggingface.co` | — |
 
 pip chạy với `--isolated --no-input --no-cache-dir --index-url https://pypi.org/simple`, env bỏ `PIP_*`/`PYTHON*`,
