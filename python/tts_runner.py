@@ -6,6 +6,7 @@ SDK: `from vieneu import Vieneu`; không có GPU thì chạy ONNX Runtime trên 
 Env VIENEU_MODEL: trống = v3 Turbo (48 kHz); "v3nano" = v3 Nano (24 kHz, nhanh hơn, chất lượng thấp hơn).
 """
 import argparse
+import gc
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import tempfile
 
 ALLOWED_BITRATES = {"64k", "96k", "128k"}
 MAX_CHUNK = 200  # #135: đoạn ngắn hơn để chèn khoảng lặng giữa các câu
+MIN_SPLIT = 40  # BUG-01: đoạn ngắn hơn mà vẫn thiếu bộ nhớ thì không chia nữa
 SAMPLE_RATES = {"": 48000, "v3nano": 24000}
 DEFAULT_VOICE = "Thiện Minh"  # Nam · Bắc · Phong cách kể chuyện (preset nổi bật của v3 Turbo)
 
@@ -83,12 +85,38 @@ def write_api_info(tts):
         print(f"[prefetch] không ghi được vieneu-api.txt: {err}", file=sys.stderr)
 
 
+def split_half(text):
+    """Cắt ở khoảng trắng gần giữa nhất (không có thì cắt cứng ở len//2); trả hai nửa đã strip."""
+    mid = len(text) // 2
+    spaces = [i for i, c in enumerate(text) if c == " "]
+    cut = min(spaces, key=lambda i: abs(i - mid)) if spaces else mid
+    return text[:cut].strip(), text[cut:].strip()
+
+
+def infer_safe(tts, text, voice, min_len=MIN_SPLIT):
+    """BUG-01: trả list audio (theo thứ tự, không chèn khoảng lặng) của một đoạn.
+
+    Thiếu bộ nhớ (`bad allocation`/MemoryError) thì gc rồi chia đôi đọc lại đệ quy; đoạn < min_len vẫn lỗi
+    hoặc lỗi khác thì ném lại.
+    """
+    try:
+        return [tts.infer(text, voice=voice)]
+    except Exception as err:
+        if not (isinstance(err, MemoryError) or "bad allocation" in str(err).lower()) or len(text) < min_len:
+            raise
+    gc.collect()  # ngoài except: traceback đã được thả, bộ nhớ của lần gọi lỗi thu hồi được
+    print(f"[tts] thiếu bộ nhớ ở đoạn {len(text)} ký tự, chia đôi", file=sys.stderr, flush=True)
+    left, right = split_half(text)
+    return infer_safe(tts, left, voice, min_len) + infer_safe(tts, right, voice, min_len)
+
+
 def disable_codec_arena(tts, ort=None):
     """Tạo lại session codec decoder của SDK với enable_cpu_mem_arena=False.
 
     vieneu 3.8.4 tạo mọi session ONNX với arena CPU bật; codec decoder nhận đầu vào dài ngắn khác nhau theo câu nên
     arena nới dần tới khi `bad allocation`. Tìm object có `sess_codec_dec` + `_so` (thuộc tính nội bộ, sâu tối đa 3
     tầng); không thấy hoặc lỗi thì ghi log và giữ session cũ (không làm hỏng job). Trả True nếu đã thay.
+    Không chặn được đỉnh cấp phát của một lần decode đoạn dài (BUG-01): việc đó do `infer_safe` xử lý.
     """
     try:
         if ort is None:
@@ -175,7 +203,7 @@ def synthesize_one(tts, src, dst, voice, mode, speed, pause_ms, bitrate, ffmpeg)
     for i, part in enumerate(parts, 1):
         if pieces:
             pieces.append(silence)
-        pieces.append(np.asarray(tts.infer(part, voice=voice), dtype=np.float32))
+        pieces.extend(np.asarray(w, dtype=np.float32) for w in infer_safe(tts, part, voice))
         if i % step == 0 or i == len(parts):
             print(f"chunk {i}/{len(parts)}", file=sys.stderr, flush=True)  # ASCII: stderr có thể là cp1252
     if not pieces:
