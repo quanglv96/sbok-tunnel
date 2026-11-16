@@ -58,15 +58,23 @@ def use_real_files_in_hf_cache():
                     os.replace(link + ".tmp", link)
 
 
-def write_api_info(tts):
+def write_api_info(tts, mode=""):
     """#141: ghi chữ ký infer, thuộc tính công khai và danh sách giọng (nếu SDK có) ra {HF_HOME}/../vieneu-api.txt.
 
-    Chỉ để chọn giọng; lỗi ở đây không làm hỏng prefetch.
+    #208: ghi thêm tên giọng preset của model ra {HF_HOME}/../vieneu-voices-{model}.json (app tunnel đọc để chọn giọng).
+    Lỗi ở đây không làm hỏng prefetch.
     """
     import pydoc
     home = os.environ.get("HF_HOME")
     if not home:
         return
+    try:
+        names = [name for _label, name in tts.list_preset_voices()]
+        with open(os.path.join(os.path.dirname(home), f"vieneu-voices-{mode or 'v3turbo'}.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(names, f, ensure_ascii=False)
+    except Exception as err:
+        print(f"[prefetch] không ghi được danh sách giọng: {err}", file=sys.stderr)
     try:
         members = [m for m in dir(tts) if not m.startswith("_")]
         lines = [pydoc.render_doc(tts.infer, renderer=pydoc.plaintext), "members: " + json.dumps(members)]
@@ -167,7 +175,7 @@ def main():
     use_real_files_in_hf_cache()
     tts = Vieneu(mode=mode) if mode else Vieneu()
     if args.prefetch:
-        write_api_info(tts)
+        write_api_info(tts, mode)
         return
     disable_codec_arena(tts)
     # #145: giọng preset của SDK (list_preset_voices -> (nhãn, tên)); mặc định giọng kể chuyện

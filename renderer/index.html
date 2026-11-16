@@ -2,37 +2,91 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; media-src data:" />
   <title>SBOK Worker</title>
   <style>
     body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 16px; }
-    .ok { color: #34d399; } .bad { color: #f87171; } .warn { color: #fbbf24; }
-    table { border-collapse: collapse; } td { padding: 4px 12px 4px 0; }
-    pre { background: #020617; padding: 8px; height: 360px; overflow: auto; font-size: 12px; }
+    h2 { margin: 0 0 12px; } h3 { margin: 0 0 8px; font-size: 15px; }
+    .ok { color: #34d399; } .bad { color: #f87171; } .warn { color: #fbbf24; } .muted { color: #94a3b8; font-size: 12px; }
+    .card { background: #1e293b; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+    table { border-collapse: collapse; } td { padding: 4px 12px 4px 0; vertical-align: top; }
+    label { display: block; font-size: 13px; margin-bottom: 4px; }
+    input, select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 4px 6px; width: 160px; }
+    button { background: #334155; color: #e2e8f0; border: 0; border-radius: 4px; padding: 6px 12px; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+    .field { margin-bottom: 8px; } .err { color: #f87171; font-size: 12px; min-height: 14px; }
+    pre { background: #020617; padding: 8px; height: 260px; overflow: auto; font-size: 12px; margin: 0; }
   </style>
 </head>
 <body>
   <h2>SBOK Worker</h2>
-  <p>Tunnel: <b id="tunnel">-</b> · Nhận job: <b id="ready">-</b></p>
-  <p>Thư mục data: <span id="dataDir">-</span></p>
-  <p><button id="recheck">Kiểm tra lại</button> <button id="changeDir">Đổi thư mục data</button></p>
-  <div id="progressBox" hidden>
-    <div id="progressLabel"></div>
-    <progress id="progressBar" max="100" style="width: 100%"></progress>
+
+  <div class="card">
+    <h3>Trạng thái</h3>
+    <div class="row">
+      <span>Nhận job: <b id="ready">-</b></span>
+      <span>Tunnel: <b id="tunnel">-</b></span>
+      <span>Job: <b id="busy">-</b></span>
+    </div>
+    <p class="muted">Thư mục data: <span id="dataDir">-</span></p>
+    <div class="row">
+      <button id="recheck">Kiểm tra lại</button>
+      <button id="changeDir">Đổi thư mục data</button>
+    </div>
+    <div id="progressBox" hidden style="margin-top: 8px">
+      <div id="progressLabel"></div>
+      <progress id="progressBar" max="100" style="width: 100%"></progress>
+    </div>
+    <table id="checks" style="margin-top: 8px"></table>
   </div>
-  <table id="checks"></table>
-  <h3>Log</h3>
-  <pre id="log"></pre>
+
+  <div class="card">
+    <h3>Cấu hình đọc</h3>
+    <p class="muted">Áp dụng từ job kế tiếp; job đang chạy giữ cấu hình lúc bắt đầu.</p>
+    <div class="row" style="align-items: flex-start">
+      <div class="field"><label for="speed">Tốc độ (0.7–1.2)</label>
+        <input id="speed" type="number" min="0.7" max="1.2" step="0.05" /><div class="err" id="err-speed"></div></div>
+      <div class="field"><label for="pauseMs">Khoảng lặng (ms, 0–2000)</label>
+        <input id="pauseMs" type="number" min="0" max="2000" step="50" /><div class="err" id="err-pauseMs"></div></div>
+      <div class="field"><label for="model">Model</label>
+        <select id="model"><option value="">v3 Turbo (48 kHz)</option><option value="v3nano">v3nano (24 kHz, nhanh)</option></select>
+        <div class="err" id="err-model"></div></div>
+      <div class="field"><label for="voice">Giọng</label>
+        <select id="voice"></select><div class="err" id="err-voice"></div></div>
+      <div class="field"><label for="bitrate">Bitrate</label>
+        <select id="bitrate"><option>64k</option><option>96k</option><option>128k</option></select>
+        <div class="err" id="err-bitrate"></div></div>
+    </div>
+    <div class="row">
+      <button id="ttsSave">Lưu</button>
+      <button id="ttsPreview">Nghe thử</button>
+      <span id="ttsMsg" class="muted"></span>
+    </div>
+    <audio id="previewAudio" hidden></audio>
+  </div>
+
+  <div class="card">
+    <h3>Log</h3>
+    <pre id="log"></pre>
+  </div>
+
   <script>
     const el = (id) => document.getElementById(id);
+    let snapshot = { ready: false, busy: false };
     function render(s) {
+      snapshot = s;
       el('tunnel').textContent = s.tunnel;
       const busy = s.setup === 'installing' || s.setup === 'checking';
       el('ready').textContent = s.ready ? 'Sẵn sàng' : busy ? 'Đang kiểm tra / cài môi trường…' : 'Tạm dừng (kiểm tra khởi động lỗi)';
       el('ready').className = s.ready ? 'ok' : busy ? 'warn' : 'bad';
+      el('busy').textContent = s.busy ? 'Đang xử lý' : 'Rảnh';
+      el('busy').className = s.busy ? 'warn' : 'ok';
       el('dataDir').textContent = s.dataDir || '-';
       el('recheck').textContent = s.setup === 'error' ? 'Thử lại' : 'Kiểm tra lại';
       el('recheck').disabled = busy;
+      // #208: nghe thử nạp model riêng -> chỉ khi môi trường sẵn sàng và không có job
+      el('ttsPreview').disabled = !s.ready || Boolean(s.busy);
       renderProgress(s.progress);
       el('checks').replaceChildren(...s.checks.map((c) => {
         const tr = document.createElement('tr');
@@ -66,9 +120,72 @@
       pre.textContent += line + '\n';
       pre.scrollTop = pre.scrollHeight;
     }
+
+    // ---- Cấu hình đọc (#208) ----
+    const FIELDS = ['speed', 'pauseMs', 'model', 'voice', 'bitrate'];
+    function fillVoices(voices, selected) {
+      const list = voices && voices.length ? voices : [selected];
+      el('voice').replaceChildren(...list.map((v) => {
+        const o = document.createElement('option');
+        o.value = o.textContent = v;
+        return o;
+      }));
+      el('voice').value = selected;
+      el('err-voice').textContent = voices ? '' : 'Model chưa tải: bấm Lưu để tải model và danh sách giọng';
+      el('err-voice').className = voices ? 'err' : 'muted';
+    }
+    function readForm() {
+      return {
+        speed: Number(el('speed').value), pauseMs: Number(el('pauseMs').value), model: el('model').value,
+        voice: el('voice').value, bitrate: el('bitrate').value,
+      };
+    }
+    function showErrors(errors = {}) {
+      for (const f of FIELDS) if (f !== 'voice' || errors.voice) el('err-' + f).textContent = errors[f] || '';
+      if (errors.voice) el('err-voice').className = 'err';
+    }
+    async function loadTts() {
+      const { tts, voices } = await window.sbok.tts.get();
+      el('speed').value = tts.speed;
+      el('pauseMs').value = tts.pauseMs;
+      el('model').value = tts.model;
+      el('bitrate').value = tts.bitrate;
+      fillVoices(voices, tts.voice);
+    }
+    el('model').addEventListener('change', async () => {
+      fillVoices(await window.sbok.tts.voices(el('model').value), el('voice').value);
+    });
+    el('ttsSave').addEventListener('click', async () => {
+      el('ttsSave').disabled = true;
+      el('ttsMsg').textContent = 'Đang lưu (đổi model có thể phải tải model)…';
+      const r = await window.sbok.tts.save(readForm());
+      el('ttsSave').disabled = false;
+      if (r.voices) fillVoices(r.voices, el('voice').value);
+      showErrors(r.errors);
+      el('ttsMsg').textContent = r.ok ? 'Đã lưu, áp dụng từ job kế tiếp' : 'Chưa lưu: kiểm tra các ô báo đỏ';
+      el('ttsMsg').className = r.ok ? 'ok' : 'bad';
+    });
+    el('ttsPreview').addEventListener('click', async () => {
+      el('ttsPreview').disabled = true;
+      el('ttsMsg').textContent = 'Đang đọc thử…';
+      el('ttsMsg').className = 'muted';
+      const r = await window.sbok.tts.preview(readForm());
+      el('ttsPreview').disabled = !snapshot.ready || Boolean(snapshot.busy);
+      showErrors(r.errors);
+      if (r.ok) {
+        el('previewAudio').src = r.audio;
+        el('previewAudio').play();
+        el('ttsMsg').textContent = '';
+      } else {
+        el('ttsMsg').textContent = r.error || 'Cấu hình chưa hợp lệ';
+        el('ttsMsg').className = 'bad';
+      }
+    });
+
     window.sbok.snapshot().then((s) => { render(s); s.logs.forEach(append); });
     window.sbok.onState(render);
     window.sbok.onLog(append);
+    loadTts();
     el('recheck').addEventListener('click', () => window.sbok.recheck());
     el('changeDir').addEventListener('click', () => window.sbok.changeDataDir());
   </script>

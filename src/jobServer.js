@@ -16,12 +16,19 @@ function tokenOk(expected, actual) {
 }
 
 /**
- * HTTP local (expose qua Cloudflare Tunnel): GET /health cho heartbeat, POST /jobs nhận PDF (raw body). Mọi request
- * cần X-Worker-Token. Job chạy tuần tự (1 GPU/CPU cho TTS).
+ * HTTP local (expose qua Cloudflare Tunnel): GET /health cho heartbeat, POST /jobs nhận PDF (raw body),
+ * POST /chapters/upload?taskId=&index= yêu cầu đẩy MP3 chương lên R2 (BR-19, chạy ngoài hàng đợi TTS). Mọi request
+ * cần X-Worker-Token. Job (kể cả lượt đọc tiếp – `enqueue`) chạy tuần tự (1 GPU/CPU cho TTS).
+ * `onQueued(job, position)`: sau 202 báo backend QUEUED (916-dev); lỗi bỏ qua, job vẫn vào hàng đợi.
  */
-function createJobServer(config, { isReady, runJob, log = console.log }) {
+function createJobServer(config, { isReady, runJob, onQueued = () => {}, onUpload = () => {}, log = console.log }) {
   const queue = [];
   let busy = false;
+
+  function enqueue(job) {
+    queue.push(job);
+    drain();
+  }
 
   async function drain() {
     if (busy) return;
@@ -41,6 +48,18 @@ function createJobServer(config, { isReady, runJob, log = console.log }) {
     }
     if (req.method === 'GET' && url.pathname === '/health') {
       res.writeHead(isReady() ? 200 : 503).end();
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/chapters/upload') {
+      const id = url.searchParams.get('taskId') || '';
+      const index = url.searchParams.get('index') || '';
+      if (!TASK_ID.test(id) || !/^\d{1,6}$/.test(index)) {
+        res.writeHead(400).end();
+        return;
+      }
+      res.writeHead(202).end();
+      Promise.resolve().then(() => onUpload(id, Number(index)))
+        .catch((err) => log(`Đẩy chương ${id}/${index} lỗi: ${err.message}`));
       return;
     }
     if (req.method !== 'POST' || url.pathname !== '/jobs') {
@@ -71,16 +90,21 @@ function createJobServer(config, { isReady, runJob, log = console.log }) {
         res.writeHead(400).end();
         return;
       }
-      queue.push({ taskId, pdfPath, fileName: (url.searchParams.get('fileName') || 'book.pdf').slice(0, 255) });
+      const job = { taskId, pdfPath, fileName: (url.searchParams.get('fileName') || 'book.pdf').slice(0, 255) };
+      const position = queue.length + 1;
       res.writeHead(202).end();
-      log(`Nhận job ${taskId} (${size} B), hàng đợi ${queue.length}`);
-      drain();
+      log(`Nhận job ${taskId} (${size} B), hàng đợi ${position}`);
+      // báo QUEUED xong mới cho chạy, để sự kiện không đến sau VERIFYING
+      Promise.resolve().then(() => onQueued(job, position)).catch(() => {}).then(() => enqueue(job));
     });
   });
 
   return {
     listen: () => new Promise((resolve) => server.listen(config.port, '127.0.0.1', resolve)),
     close: () => server.close(),
+    enqueue,
+    /** #208: có job đang chạy hoặc đang chờ (chặn "Nghe thử"). */
+    isBusy: () => busy || queue.length > 0,
   };
 }
 

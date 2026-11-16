@@ -8,6 +8,23 @@ VieNeu-TTS, đẩy MP3 lên R2.
 - `cloudflared` (chỉ khi có `CLOUDFLARE_TUNNEL_TOKEN`)
 - Python, VieNeu-TTS, ffmpeg: app tự kiểm và tự cài (xem dưới)
 
+## Cấu hình đọc (#208)
+Khối "Cấu hình đọc" trên app: tốc độ 0.7–1.2 (bước 0.05, mặc định 1.0), khoảng lặng 0–2000 ms, model v3 Turbo /
+v3nano, giọng (danh sách của model, đọc từ `{dataDir}/runtime/vieneu-voices-*.json`), bitrate 64k/96k/128k. Lưu vào
+`settings.json` mục `tts`, thắng env (`SBOK_TTS_SPEED`, `SBOK_TTS_PAUSE_MS`, `SBOK_TTS_VOICE`, `VIENEU_MODEL`,
+`SBOK_MP3_BITRATE`), áp dụng từ job kế tiếp. Chọn model chưa tải thì app tải model trước khi lưu (cần Internet).
+"Nghe thử" đọc câu mẫu bằng cấu hình đang chọn; tắt khi đang có job hoặc môi trường chưa sẵn sàng.
+
+## Job, đọc tiếp và MP3
+- Nhận PDF → báo `QUEUED` kèm vị trí hàng đợi. Mỗi chương đọc xong → `chapter-done` (nghe được ngay).
+- Lỗi ở giai đoạn TTS → `RETRYING`, đọc tiếp từ chương lỗi sau 1 / 5 / 15 phút, tối đa 3 lần, rồi `failed`. Hàng đợi
+  đọc tiếp lưu ở `{dataDir}/work/jobs/{taskId}/job.json` (kèm cấu hình đọc lúc job bắt đầu); tắt/mở app vẫn chạy đúng
+  hẹn. Vi phạm, không trích được chữ, cấu hình đọc sai thì không đọc tiếp.
+- MP3 giữ lâu dài ở `{dataDir}/work/cache/{taskId}/{index}.mp3`, không tự xoá. Chỉ đẩy lên R2 khi sbok-service yêu cầu
+  qua `POST /chapters/upload?taskId=&index=` (token worker; trả 202, kết quả báo `chapter-uploaded` /
+  `chapter-upload-failed`).
+- **Đổi body `complete`: deploy cùng sbok-service.**
+
 ## Môi trường tự cài (BR-15)
 Lần chạy đầu app hỏi thư mục data (huỷ = `{userData}/data`), lưu ở `{userData}/settings.json`.
 Mỗi lần khởi động và khi bấm "Kiểm tra lại", app kiểm từng công cụ theo thứ tự settings → `{dataDir}/runtime`;

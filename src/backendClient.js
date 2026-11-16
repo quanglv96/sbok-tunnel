@@ -2,6 +2,8 @@
 
 const { withRetry } = require('./retry');
 
+const ok = (status) => status >= 200 && status < 300;
+
 /** Gọi ngược sbok-service /internal/worker/* (token X-Worker-Token). */
 function createBackendClient({ backendUrl, workerToken }, { fetchImpl = fetch, log = console.log } = {}) {
   async function post(path, body) {
@@ -20,7 +22,14 @@ function createBackendClient({ backendUrl, workerToken }, { fetchImpl = fetch, l
 
   return {
     progress: (taskId, stage, detail) => post('progress', { taskId, stage, detail }),
-    complete: (taskId, title, author, chapters) => post('complete', { taskId, title, author, chapters }),
+    /** BR-18: một chương xong (MP3 ở máy này); true nếu backend đã ghi nhận (2xx). */
+    chapterDone: async (taskId, bookTitle, author, chapter) =>
+      ok(await post('chapter-done', { taskId, bookTitle, author, chapter })),
+    /** Mọi chương đã báo qua chapter-done. */
+    complete: (taskId) => post('complete', { taskId }),
+    /** BR-19: đẩy chương lên R2 xong / lỗi (`missing`: không còn MP3). */
+    chapterUploaded: (taskId, index, r2Key, sizeBytes) => post('chapter-uploaded', { taskId, index, r2Key, sizeBytes }),
+    chapterUploadFailed: (taskId, index, missing) => post('chapter-upload-failed', { taskId, index, missing }),
     violation: (taskId, violation) => post('violation', { taskId, violation }),
     failed: (taskId, message) => post('failed', { taskId, message }),
     /** true nếu còn chỗ cho {@code bytes} trên R2 (BR-6). */
