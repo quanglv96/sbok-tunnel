@@ -101,7 +101,10 @@ function createJobServer(config, { isReady, runJob, onQueued = () => {}, onUploa
 
   return {
     listen: () => new Promise((resolve) => server.listen(config.port, '127.0.0.1', resolve)),
-    close: () => server.close(),
+    close: () => {
+      server.close();
+      server.closeAllConnections();
+    },
     enqueue,
     /** #208: có job đang chạy hoặc đang chờ (chặn "Nghe thử"). */
     isBusy: () => busy || queue.length > 0,
