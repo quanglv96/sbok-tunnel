@@ -79,7 +79,19 @@ function createRetryQueue({ jobsDir, enqueue, log = console.log, now = Date.now,
     return count;
   }
 
-  return { schedule, load };
+  /** BR-22: huỷ hẹn đọc tiếp và xoá `job.json` (giữ MP3 + txt). */
+  function cancel(taskId) {
+    clearTimeout(timers.get(taskId));
+    timers.delete(taskId);
+    removeJob(jobsDir, taskId);
+  }
+
+  return { schedule, load, cancel };
 }
 
-module.exports = { MAX_RETRIES, RETRY_DELAYS_MIN, TtsError, createRetryQueue, nextRetry, readJob, saveJob };
+/** Xoá `job.json` của task (txt chương giữ lâu dài, BR-16 v13). */
+function removeJob(jobsDir, taskId) {
+  fs.rmSync(jobFile(jobsDir, taskId), { force: true });
+}
+
+module.exports = { MAX_RETRIES, RETRY_DELAYS_MIN, TtsError, createRetryQueue, nextRetry, readJob, removeJob, saveJob };

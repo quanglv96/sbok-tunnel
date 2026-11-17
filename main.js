@@ -8,7 +8,7 @@ const { readSettings, writeSettings } = require('./src/settings');
 const { ensureRuntime } = require('./src/runtimeSetup');
 const { createTunnelManager } = require('./src/tunnelManager');
 const { createJobServer } = require('./src/jobServer');
-const { createBackendClient } = require('./src/backendClient');
+const { createBackendClient, backendBootLines } = require('./src/backendClient');
 const { createR2Uploader } = require('./src/r2Uploader');
 const { processJob, uploadChapter } = require('./src/pipeline');
 const { createRetryQueue } = require('./src/retryQueue');
@@ -140,6 +140,7 @@ async function boot() {
   config = loadConfig(process.env, path.join(state.dataDir, 'work'));
   process.env.HF_HOME = path.join(state.dataDir, 'runtime', 'hf');
 
+  for (const line of backendBootLines(config)) log(line);
   const backend = createBackendClient(config, { log });
   const uploader = createR2Uploader(config.r2, { log });
   const retry = createRetryQueue({ jobsDir: config.jobsDir, enqueue: (job) => jobServer.enqueue(job), log });
@@ -154,6 +155,7 @@ async function boot() {
           config, backend, uploader, log,
           tts: job.resume ? null : resolveTts(readSettings(settingsFile()), process.env),
           scheduleRetry: (s) => retry.schedule(s),
+          cancelRetry: (id) => retry.cancel(id),
         });
       } finally {
         setImmediate(() => {
@@ -163,7 +165,8 @@ async function boot() {
       }
     },
     onQueued: (job, position) => backend.progress(job.taskId, 'QUEUED', `Máy xử lý đã nhận PDF, vị trí hàng đợi ${position}`),
-    onUpload: (taskId, index) => uploadChapter(taskId, index, { config, backend, uploader, log }),
+    onUpload: (taskId, index) => uploadChapter(taskId, index, { config, backend, uploader, log,
+      cancelRetry: (id) => retry.cancel(id) }),
     log,
   });
   await jobServer.listen();

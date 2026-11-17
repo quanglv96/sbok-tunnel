@@ -42,6 +42,12 @@ function createJobServer(config, { isReady, runJob, onQueued = () => {}, onUploa
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
+    // BR-22: một dòng mỗi request, không token/query/body; heartbeat /health OK thì không log (15 s một lần)
+    res.on('finish', () => {
+      if (url.pathname === '/health' && res.statusCode < 400) return;
+      const id = url.searchParams.get('taskId') || '';
+      log(`${req.method} ${url.pathname}${TASK_ID.test(id) ? ` task ${id}` : ''} → ${res.statusCode}`);
+    });
     if (!tokenOk(config.workerToken, req.headers['x-worker-token'])) {
       res.writeHead(401).end();
       return;

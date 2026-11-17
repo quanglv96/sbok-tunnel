@@ -7,7 +7,21 @@ const { extractText } = require('./extract/pdfText');
 const { splitChapters } = require('./extract/chapterSplitter');
 const { synthesizeBatch } = require('./tts/ttsRunner');
 const { validateTts } = require('./ttsSettings');
-const { MAX_RETRIES, TtsError, nextRetry, readJob, saveJob } = require('./retryQueue');
+const { MAX_RETRIES, TtsError, nextRetry, readJob, removeJob, saveJob } = require('./retryQueue');
+
+/** BR-22: backendClient ném lỗi có cờ `rejected` khi callback nhận 404/401/409. */
+const isRejected = (err) => Boolean(err && err.rejected);
+
+/**
+ * BR-22: dừng job khi backend từ chối task: không gọi callback nào nữa, huỷ hẹn đọc tiếp, xoá `job.json`,
+ * giữ MP3 + txt, log một dòng lý do.
+ */
+function stopJob(taskId, err, { config, log = console.log, cancelRetry }) {
+  if (cancelRetry) cancelRetry(taskId);
+  removeJob(config.jobsDir, taskId);
+  log(`Task ${taskId}: dừng job vì backend trả HTTP ${err.status} (task không tồn tại, sai token hoặc đã kết thúc); `
+    + 'giữ MP3 và txt');
+}
 
 /** "Chương 2/5 · 40% · tổng 25%": tiến độ chương hiện tại và cả sách (theo số ký tự). */
 function progressText(label, chapterRatio, doneChars, totalChars) {
@@ -28,9 +42,10 @@ function spokenText(bookTitle, ch) {
 
 /**
  * Xử lý 1 job: sandbox (BR-4) -> trích text + tách chương (BR-8) -> ghi txt + `job.json` (chụp cấu hình đọc) -> TTS,
- * báo từng chương (BR-18). `job.resume` = lượt đọc tiếp từ `job.json`. PDF luôn bị xoá; txt giữ tới khi job kết thúc;
- * MP3 giữ lâu dài ở `{cacheDir}/{taskId}` (BR-19, chỉ đẩy R2 khi có người nghe – `uploadChapter`).
- * `ctx`: { config, backend, log, deps, tts (cấu hình đọc đã resolve), scheduleRetry(state) }.
+ * báo từng chương (BR-18). `job.resume` = lượt đọc tiếp từ `job.json`. PDF luôn bị xoá; txt chương giữ lâu dài
+ * (BR-16 v13); MP3 giữ lâu dài ở `{cacheDir}/{taskId}` (BR-19, chỉ đẩy R2 khi có người nghe – `uploadChapter`).
+ * Callback bị từ chối (404/401/409) → `stopJob` (BR-22).
+ * `ctx`: { config, backend, log, deps, tts (cấu hình đọc đã resolve), scheduleRetry(state), cancelRetry(taskId) }.
  */
 async function processJob(job, ctx) {
   const { config, backend, log = console.log, deps = {} } = ctx;
@@ -75,6 +90,10 @@ async function processJob(job, ctx) {
     };
     saveJob(config.jobsDir, state);
   } catch (err) {
+    if (isRejected(err)) {
+      stopJob(taskId, err, ctx);
+      return;
+    }
     log(`Task ${taskId}: lỗi ${err.message}`);
     await backend.failed(taskId, 'Xử lý thất bại').catch(() => {});
     fs.rmSync(textDir, { recursive: true, force: true });
@@ -106,8 +125,14 @@ async function runTts(state, ctx) {
   const textDir = path.join(config.jobsDir, taskId);
   const mp3Dir = path.join(config.cacheDir, taskId);
   const save = () => saveJob(config.jobsDir, state);
+  // BR-22: callback bị từ chối → ghi lại lỗi, không gửi gì thêm, dừng TTS ở chương kế tiếp
+  let stopped = null;
+  const halt = (err) => {
+    if (!stopped) stopped = err;
+  };
   const sends = [];
   const send = (ch) => {
+    if (stopped) return Promise.resolve();
     const d = state.done[ch.index];
     const p = backend.chapterDone(taskId, state.bookTitle, state.author,
       { index: ch.index, title: ch.title, sizeBytes: d.sizeBytes, durationSec: d.durationSec })
@@ -118,18 +143,24 @@ async function runTts(state, ctx) {
           save();
         }
       })
-      .catch((err) => log(`Task ${taskId}: báo chương ${ch.index} lỗi (${err.message}), sẽ gửi lại`));
+      .catch((err) => (isRejected(err) ? halt(err)
+        : log(`Task ${taskId}: báo chương ${ch.index} lỗi (${err.message}), sẽ gửi lại`)));
     sends.push(p);
     return p;
   };
   // #133: báo người dùng đang ở chương nào, bao nhiêu %; lỗi gửi tiến độ không được làm hỏng job
-  const report = (detail) => backend.progress(taskId, 'TTS_PROCESSING', detail).catch(() => {});
+  const report = (detail) => (stopped ? Promise.resolve()
+    : backend.progress(taskId, 'TTS_PROCESSING', detail).catch((err) => { if (isRejected(err)) halt(err); }));
+  const checkStopped = () => {
+    if (stopped) throw stopped;
+  };
   try {
     const pending = chapters.filter((c) => !state.done[c.index]);
     const totalChars = chapters.reduce((s, c) => s + c.chars, 0);
     let doneChars = totalChars - pending.reduce((s, c) => s + c.chars, 0);
     await report(state.attempt ? `Đọc tiếp từ chương ${chapters.indexOf(pending[0]) + 1}/${chapters.length}`
       : `${chapters.length} chương, ${totalChars} ký tự`);
+    checkStopped();
     if (pending.length) {
       fs.mkdirSync(mp3Dir, { recursive: true });
       // P1 (AC-23): gọi TTS 1 lần cho các chương còn lại (model nạp 1 lần)
@@ -150,6 +181,7 @@ async function runTts(state, ctx) {
         if (m) void report(progressText(label(), m[1] / m[2], doneChars + (pending[cur].chars * m[1]) / m[2], totalChars));
       };
       const onChapterDone = (i, { durationSec }) => {
+        checkStopped(); // ném lỗi → ttsRunner kill tiến trình Python, không đọc chương sau
         const ch = pending[i];
         doneChars += ch.chars;
         state.done[ch.index] = { sizeBytes: fs.statSync(items[i].out).size, durationSec };
@@ -160,6 +192,7 @@ async function runTts(state, ctx) {
       try {
         await tts(state.tts ? { ...config, tts: state.tts } : config, items, ttsLog, onChapterDone);
       } catch (err) {
+        checkStopped();
         throw new TtsError(err.message);
       }
     }
@@ -169,26 +202,35 @@ async function runTts(state, ctx) {
     // BR-18: gửi lại chương chưa báo trước khi chốt
     await Promise.all(sends);
     for (const ch of chapters) if (!state.reported.includes(ch.index)) await send(ch);
+    checkStopped();
     await backend.complete(taskId);
-    log(`Task ${taskId}: hoàn tất ${chapters.length} chương, MP3 giữ ở ${mp3Dir}`);
-    fs.rmSync(textDir, { recursive: true, force: true });
+    log(`Task ${taskId}: hoàn tất ${chapters.length} chương, MP3 và txt giữ ở ${mp3Dir}, ${textDir}`);
+    removeJob(config.jobsDir, taskId);
   } catch (err) {
     await Promise.all(sends);
-    const next = err instanceof TtsError ? nextRetry(state.attempt) : null;
-    if (next) {
-      state.attempt = next.attempt;
-      state.nextRetryAt = next.nextRetryAt;
-      save();
-      const msg = `Đọc tiếp lần ${next.attempt}/${MAX_RETRIES} sau ${next.minutes} phút`;
-      log(`Task ${taskId}: lỗi TTS (${err.message}); ${msg.toLowerCase()}`);
-      await backend.progress(taskId, 'RETRYING', msg).catch(() => {});
-      ctx.scheduleRetry(state);
+    if (isRejected(err) || stopped) {
+      stopJob(taskId, stopped || err, ctx);
       return;
     }
-    log(`Task ${taskId}: lỗi ${err.message}`);
-    const msg = err instanceof TtsError ? `Đọc lỗi, đã đọc tiếp ${MAX_RETRIES} lần không được` : 'Xử lý thất bại';
-    await backend.failed(taskId, msg).catch(() => {});
-    fs.rmSync(textDir, { recursive: true, force: true });
+    const next = err instanceof TtsError ? nextRetry(state.attempt) : null;
+    try {
+      if (next) {
+        state.attempt = next.attempt;
+        state.nextRetryAt = next.nextRetryAt;
+        save();
+        const msg = `Đọc tiếp lần ${next.attempt}/${MAX_RETRIES} sau ${next.minutes} phút`;
+        log(`Task ${taskId}: lỗi TTS (${err.message}); ${msg.toLowerCase()}`);
+        await backend.progress(taskId, 'RETRYING', msg).catch((e) => { if (isRejected(e)) throw e; });
+        ctx.scheduleRetry(state);
+        return;
+      }
+      log(`Task ${taskId}: lỗi ${err.message}`);
+      const msg = err instanceof TtsError ? `Đọc lỗi, đã đọc tiếp ${MAX_RETRIES} lần không được` : 'Xử lý thất bại';
+      await backend.failed(taskId, msg).catch((e) => { if (isRejected(e)) throw e; });
+      removeJob(config.jobsDir, taskId);
+    } catch (e) {
+      stopJob(taskId, e, ctx);
+    }
   }
 }
 
@@ -196,7 +238,16 @@ async function runTts(state, ctx) {
  * BR-19/BR-10: đẩy MP3 chương lên R2 khi sbok-service yêu cầu (`uploader.upload` tự retry 3 lần có backoff).
  * Không còn file → `missing=true`. Không xoá MP3 sau khi đẩy.
  */
-async function uploadChapter(taskId, index, { config, backend, uploader, log = console.log }) {
+async function uploadChapter(taskId, index, ctx) {
+  try {
+    await doUpload(taskId, index, ctx);
+  } catch (err) {
+    if (!isRejected(err)) throw err;
+    stopJob(taskId, err, ctx);
+  }
+}
+
+async function doUpload(taskId, index, { config, backend, uploader, log = console.log }) {
   const mp3 = path.join(config.cacheDir, taskId, `${index}.mp3`);
   log(`Đẩy chương ${taskId}/${index}: bắt đầu`);
   if (!fs.existsSync(mp3)) {
