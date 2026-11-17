@@ -215,3 +215,21 @@ test('TC-94/TC-27: đẩy chương theo yêu cầu: không có file → missing;
   assert.ok(fs.existsSync(mp3));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('TC-144: lỗi I/O sau khi đã ghi txt (saveJob hỏng) → gọi failed, txt còn, không có job.json, PDF bị xoá', async () => {
+  const { dir, pdfPath, config } = tmpJob();
+  const b = fakeBackend();
+  // thư mục trùng tên file tạm của job.json → saveJob ném EISDIR sau khi txt đã ghi xong
+  fs.mkdirSync(path.join(config.jobsDir, 't8', 'job.json.tmp'), { recursive: true });
+  const tts = fakeTts();
+  const deps = { runScan: async () => null, extractText: async () => ({ text: THREE, title: 'Sách', author: null }),
+    synthesizeBatch: tts.fn };
+  await run({ taskId: 't8', pdfPath, fileName: 'a.pdf' }, { config, backend: b.api, deps });
+
+  assert.strictEqual(b.failed, 'Xử lý thất bại');
+  assert.strictEqual(tts.calls.length, 0);
+  for (const n of [1, 2, 3]) assert.ok(fs.existsSync(path.join(config.jobsDir, 't8', `${n}.txt`)), `${n}.txt phải còn`);
+  assert.ok(!fs.existsSync(path.join(config.jobsDir, 't8', 'job.json')));
+  assert.ok(!fs.existsSync(pdfPath));
+  fs.rmSync(dir, { recursive: true, force: true });
+});

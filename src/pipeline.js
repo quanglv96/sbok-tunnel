@@ -96,7 +96,7 @@ async function processJob(job, ctx) {
     }
     log(`Task ${taskId}: lỗi ${err.message}`);
     await backend.failed(taskId, 'Xử lý thất bại').catch(() => {});
-    fs.rmSync(textDir, { recursive: true, force: true });
+    removeJob(config.jobsDir, taskId); // BR-16 v13 (TC-144): giữ txt đã ghi, chỉ bỏ job.json để không đọc tiếp
     return;
   } finally {
     fs.rmSync(pdfPath, { force: true });
