@@ -7,6 +7,15 @@ const ok = (status) => status >= 200 && status < 300;
 /** Gọi ngược sbok-service /internal/worker/* (token X-Worker-Token). */
 function createBackendClient({ backendUrl, workerToken }, { fetchImpl = fetch, log = console.log } = {}) {
   async function post(path, body) {
+    const status = await send(path, body);
+    // log từng bước gọi backend; progress 2xx gửi liên tục nên không log
+    if (!ok(status) || path !== 'progress') {
+      log(`Callback ${path}${body.taskId ? ` task ${body.taskId}` : ''}: HTTP ${status}`);
+    }
+    return status;
+  }
+
+  async function send(path, body) {
     return withRetry(async () => {
       const res = await fetchImpl(`${backendUrl}/internal/worker/${path}`, {
         method: 'POST',

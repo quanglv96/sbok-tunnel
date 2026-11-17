@@ -112,6 +112,7 @@ async function runTts(state, ctx) {
     const p = backend.chapterDone(taskId, state.bookTitle, state.author,
       { index: ch.index, title: ch.title, sizeBytes: d.sizeBytes, durationSec: d.durationSec })
       .then((ok) => {
+        if (!ok) log(`Task ${taskId}: backend không nhận chương ${ch.index}, sẽ gửi lại trước khi chốt`);
         if (ok && !state.reported.includes(ch.index)) {
           state.reported.push(ch.index);
           save();
@@ -197,6 +198,7 @@ async function runTts(state, ctx) {
  */
 async function uploadChapter(taskId, index, { config, backend, uploader, log = console.log }) {
   const mp3 = path.join(config.cacheDir, taskId, `${index}.mp3`);
+  log(`Đẩy chương ${taskId}/${index}: bắt đầu`);
   if (!fs.existsSync(mp3)) {
     log(`Đẩy chương ${taskId}/${index}: không còn MP3`);
     await backend.chapterUploadFailed(taskId, index, true);
