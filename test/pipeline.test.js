@@ -113,7 +113,9 @@ test('TC-65/TC-85: job 3 chương gọi TTS 1 lần, báo từng chương, compl
   assert.strictEqual(b.failed, null);
   for (const n of [1, 2, 3]) assert.ok(b.progress.some((d) => d.startsWith(`TTS_PROCESSING|Chương ${n}/3 · 0% · tổng `)));
   assert.ok(fs.existsSync(path.join(config.cacheDir, 't3', '1.mp3')), 'MP3 phải được giữ (BR-19)');
-  assert.ok(!fs.existsSync(path.join(config.jobsDir, 't3')), 'txt + job.json dọn khi job kết thúc');
+  // TC-136 (v13): txt chương giữ lâu dài như MP3; chỉ job.json bị xoá khi job kết thúc
+  for (const n of [1, 2, 3]) assert.ok(fs.existsSync(path.join(config.jobsDir, 't3', `${n}.txt`)), `giữ ${n}.txt`);
+  assert.ok(!fs.existsSync(path.join(config.jobsDir, 't3', 'job.json')), 'job.json dọn khi job kết thúc');
   assert.ok(!fs.existsSync(pdfPath));
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -161,7 +163,9 @@ test('TC-86/TC-77: chương 2 lỗi → RETRYING 1/5/15 phút, chỉ đọc chư
   assert.strictEqual(scheduled.length, 0);
   assert.match(b.failed, /3 lần/);
   assert.strictEqual(b.completed, 0);
-  assert.ok(!fs.existsSync(path.join(config.jobsDir, 't5')));
+  // TC-136: hết lượt đọc tiếp (FAILED) vẫn giữ txt, chỉ xoá job.json
+  assert.ok(!fs.existsSync(path.join(config.jobsDir, 't5', 'job.json')));
+  assert.ok(fs.existsSync(path.join(config.jobsDir, 't5', '3.txt')));
   assert.ok(fs.existsSync(path.join(config.cacheDir, 't5', '1.mp3')), 'chương đã xong vẫn giữ');
   fs.rmSync(dir, { recursive: true, force: true });
 });
