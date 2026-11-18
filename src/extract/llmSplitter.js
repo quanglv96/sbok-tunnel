@@ -62,6 +62,44 @@ function cutByPages(pages, chapters) {
     .map((p, i) => ({ index: i + 1, ...p }));
 }
 
+const HEADING_KEYWORD = /^(chương|phần|phụ lục|chapter|part|appendix)(\s|$|[:.\-–])/iu;
+const HEADING_LINE_MAX = 120;
+const isUpper = (s) => /\p{L}/u.test(s) && s === s.toUpperCase();
+const openParens = (s) => (s.match(/\(/g) || []).length > (s.match(/\)/g) || []).length;
+const norm = (s) => s.replace(/\s+/g, ' ').trim().toLocaleLowerCase('vi');
+
+/**
+ * Dòng tiêu đề của trang (CHƯƠNG/PHẦN/PHỤ LỤC… hoặc dòng viết hoa), đã ghép các dòng bị xuống dòng do khổ giấy:
+ * dòng sau nối vào khi tiêu đề còn mở ngoặc, kết thúc bằng ":"/"-", hoặc cả hai dòng đều viết hoa.
+ */
+function headingLines(pageText) {
+  const lines = String(pageText || '').split('\n').map((l) => l.replace(/\s+/g, ' ').trim());
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    let cur = lines[i];
+    if (!cur || cur.length > HEADING_LINE_MAX || !(HEADING_KEYWORD.test(cur) || isUpper(cur))) continue;
+    while (i + 1 < lines.length) {
+      const nx = lines[i + 1];
+      if (!nx || nx.length > HEADING_LINE_MAX || cur.length + nx.length >= TITLE_MAX) break;
+      if (!(openParens(cur) || /[:\-–]$/.test(cur) || (isUpper(cur) && isUpper(nx)))) break;
+      cur = `${cur} ${nx}`;
+      i++;
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
+/** LLM thường chỉ lấy dòng đầu của tiêu đề bị xuống dòng: thay bằng tiêu đề đầy đủ trên trang bắt đầu nếu khớp phần đầu. */
+function fullTitle(title, pageText) {
+  const t = norm(title);
+  const hit = headingLines(pageText).find((h) => {
+    const n = norm(h);
+    return n.length > t.length && n.startsWith(t) && !/[\p{L}\d]/u.test(n[t.length]);
+  });
+  return hit ? hit.slice(0, TITLE_MAX) : title;
+}
+
 /**
  * Tách chương bằng LLM. Mọi lỗi (gọi Ollama, kết quả sai) ném `LlmSplitError` (message kèm mã lỗi gốc nếu có).
  * Trả { chapters, stats } (stats để log, không chứa text trang/prompt).
@@ -80,8 +118,10 @@ async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
     const code = err && (err.code || (err.cause && err.cause.code));
     throw new LlmSplitError(`Gọi Ollama lỗi: ${msg}${code && !msg.includes(code) ? ` (${code})` : ''}`);
   }
-  const chapters = cutByPages(pages, parseChapters(res && res.content, pages.length));
+  const parsed = parseChapters(res && res.content, pages.length)
+    .map((c) => ({ ...c, title: fullTitle(c.title, pages[c.startPage - 1]) }));
+  const chapters = cutByPages(pages, parsed);
   return { chapters, stats: { ...(res && res.stats), pages: pages.length, promptChars: prompt.length, numCtx: NUM_CTX } };
 }
 
-module.exports = { LlmSplitError, buildPrompt, cutByPages, parseChapters, splitWithLlm };
+module.exports = { LlmSplitError, buildPrompt, cutByPages, fullTitle, headingLines, parseChapters, splitWithLlm };

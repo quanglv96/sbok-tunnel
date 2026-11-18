@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { LlmSplitError, buildPrompt, splitWithLlm } = require('../src/extract/llmSplitter');
+const { LlmSplitError, buildPrompt, fullTitle, headingLines, splitWithLlm } = require('../src/extract/llmSplitter');
 const { NUM_CTX, isReady, pull } = require('../src/ollama');
 
 const PAGES = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
@@ -92,6 +92,22 @@ test('TC-34: splitWithLlm trả kèm số liệu chat + số trang, độ dài p
   const r = await splitWithLlm(PAGES, { model: 'm', chatFn: reply([{ title: 'C1', start_page: 1 }]) });
   assert.deepStrictEqual(r.stats, { ...STATS, pages: 6, promptChars: buildPrompt(PAGES).length, numCtx: NUM_CTX });
   assert.ok(!JSON.stringify(r.stats).includes('p1'));
+});
+
+test('TC-44: tiêu đề chương bị xuống dòng do khổ giấy → title đầy đủ (LLM chỉ trả dòng đầu)', async () => {
+  const pages = ['Mục lục', 'CHƯƠNG BỐN: ĐỐI MẶT SỰ THẬT\nPHŨ PHÀNG (NHƯNG ĐỪNG\nMẤT NIỀM TIN)\nThân bài bình thường.', 'x'];
+  const chapters = await split({ chapters: [{ title: 'Chương bốn: Đối mặt sự thật', start_page: 2 }] }, pages);
+  assert.strictEqual(chapters[1].title, 'CHƯƠNG BỐN: ĐỐI MẶT SỰ THẬT PHŨ PHÀNG (NHƯNG ĐỪNG MẤT NIỀM TIN)');
+  assert.strictEqual(chapters[1].text, pages.slice(1).join('\n'));
+});
+
+test('TC-45: ghép tiêu đề sau ":" / ngoặc chưa đóng; không ghép thân bài, không khớp nhầm CHƯƠNG 1 với CHƯƠNG 10', () => {
+  assert.deepStrictEqual(headingLines('Chương 1:\nMở đầu\nNội dung chương.'), ['Chương 1: Mở đầu']);
+  assert.deepStrictEqual(headingLines('Phụ lục A (bảng tra\ncứu thuật ngữ)\nNội dung.'), ['Phụ lục A (bảng tra cứu thuật ngữ)']);
+  assert.deepStrictEqual(headingLines('PHỤ LỤC A\nBảng tra cứu thuật ngữ dùng trong sách.'), ['PHỤ LỤC A']);
+  assert.strictEqual(fullTitle('CHƯƠNG 1', 'CHƯƠNG 10: KẾT\nThân bài.'), 'CHƯƠNG 1');
+  assert.strictEqual(fullTitle('Giới thiệu', 'Giới thiệu về tác giả và cuốn sách này'), 'Giới thiệu');
+  assert.strictEqual(fullTitle('C1', undefined), 'C1');
 });
 
 const fakeRes = (status, body) => ({ ok: status < 300, status, text: async () => body, json: async () => JSON.parse(body) });
