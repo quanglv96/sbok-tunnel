@@ -131,8 +131,10 @@ function chat(model, messages, { requestFn = http.request, timeoutMs = CHAT_TIME
       let text = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { text += c; });
-      res.on('error', fail);
-      res.on('close', () => { if (!res.complete) fail(new Error('Chat: Ollama đóng kết nối giữa chừng')); });
+      const cut = (e) => Object.assign(new Error(`Chat: Ollama đóng kết nối giữa chừng${e ? ` (${e.message})` : ''}`),
+        { code: e && e.code });
+      res.on('error', (e) => fail(cut(e)));
+      res.on('close', () => { if (!res.complete) fail(cut()); });
       res.on('end', () => {
         try {
           if (res.statusCode < 200 || res.statusCode >= 300) {
