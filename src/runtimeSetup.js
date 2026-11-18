@@ -6,6 +6,7 @@ const https = require('https');
 const crypto = require('crypto');
 const { pipeline } = require('stream/promises');
 const { execFile } = require('child_process');
+const ollama = require('./ollama');
 
 /** Lệnh kiểm VieNeu-TTS đã cài (SDK `vieneu`, theo README tác giả). */
 const TTS_IMPORT = 'from vieneu import Vieneu; import numpy';
@@ -32,6 +33,9 @@ const MANIFEST = {
   // Bản build Windows chính thức ffmpeg.org trỏ tới (gyan.dev), release có tag cố định trên GitHub.
   ffmpeg: { name: 'ffmpeg win64', version: '7.1',
     url: 'https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip', sha256: '' },
+  // FEAT-007: bản portable Windows chính thức của Ollama (release GitHub có tag cố định)
+  ollama: { name: 'Ollama win64', version: '0.9.0',
+    url: 'https://github.com/ollama/ollama/releases/download/v0.9.0/ollama-windows-amd64.zip', sha256: '' },
 };
 
 const PYPI_INDEX = 'https://pypi.org/simple';
@@ -159,13 +163,15 @@ async function must(promise, what) {
 /**
  * BR-15 (#109): toàn bộ thư viện nằm trong {dataDir}/runtime. Chỉ kiểm bản trong đó (không dùng PATH hay đường dẫn
  * ngoài thư mục data); thiếu/hỏng cái nào thì tự cài cái đó vào đó. Gọi ở mọi lần khởi động.
- * Trả { pythonPath, ffmpegPath, errors } (path null = chưa dùng được).
+ * FEAT-007 (BR-4): `split` = { mode, model } đã resolve; mode llm/chưa chọn thì thêm bước Ollama + model.
+ * Trả { pythonPath, ffmpegPath, llm?, errors } (path null = chưa dùng được; llm { ok, detail } chỉ có khi kiểm Ollama).
  */
-async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}, deps = {} }) {
+async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}, deps = {}, split = null }) {
   const run = deps.run || exec;
   const dlRaw = deps.download || download;
+  const withLlm = Boolean(split) && split.mode !== 'heuristic';
   // Tiến độ cho UI: bước step/STEPS; received/total byte khi tải file, total = 0 là chưa biết (thanh chạy vô định)
-  const STEPS = 5;
+  const STEPS = withLlm ? 7 : 5;
   const progress = (step, label, received = 0, total = 0) => onProgress({ step, steps: STEPS, label, received, total });
   const dl = (step, item, dest) =>
     dlRaw(item, dest, undefined, (received, total) => progress(step, `Tải ${item.name}`, received, total));
@@ -238,7 +244,45 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
     }
   }
 
-  return { pythonPath, ffmpegPath, errors };
+  const llm = withLlm ? await ensureOllama({ rt, env, split, log, progress, dl, run, ol: deps.ollama || ollama }) : null;
+  if (llm && !llm.ok) {
+    // Đã chọn llm: chặn nhận job (job nào cũng sẽ lỗi). Chưa chọn: dùng logic hiện tại, chỉ báo ở dòng kiểm tra.
+    if (split.mode === 'llm') errors.push(`Ollama/LLM: ${llm.detail}`);
+    else log(`[setup] Ollama/LLM chưa dùng được (${llm.detail}): tách chương bằng logic hiện tại`);
+  }
+
+  return llm ? { pythonPath, ffmpegPath, llm, errors } : { pythonPath, ffmpegPath, errors };
+}
+
+/** FEAT-007 (BR-4): Ollama trong {dataDir}/runtime/ollama, model trong runtime/ollama-models. Đã có thì bỏ qua. */
+async function ensureOllama({ rt, env, split, log, progress, dl, run, ol }) {
+  const dir = path.join(rt, 'ollama');
+  const exe = path.join(dir, 'ollama.exe');
+  try {
+    let st = await ol.isReady(split.model);
+    if (!st.running) {
+      if (!fs.existsSync(exe)) {
+        log('[setup] Đang cài Ollama vào ' + dir);
+        const zip = await dl(6, MANIFEST.ollama, path.join(rt, 'downloads', 'ollama.zip'));
+        progress(6, 'Giải nén Ollama');
+        fs.mkdirSync(dir, { recursive: true });
+        await must(run('tar', ['-xf', zip, '-C', dir], { env, timeout: 0 }), 'Giải nén Ollama');
+      }
+      progress(6, 'Khởi động Ollama');
+      ol.serve(exe, { ...env, OLLAMA_HOST: ollama.OLLAMA_HOST, OLLAMA_MODELS: path.join(rt, 'ollama-models') });
+      st = await ol.waitReady(split.model);
+      if (!st.running) throw new Error('Ollama không khởi động được');
+    }
+    if (!st.hasModel) {
+      log(`[setup] Đang tải model ${split.model}`);
+      progress(7, `Tải model ${split.model} (chỉ lần đầu, có thể mất nhiều phút)`);
+      await ol.pull(split.model);
+      if (!(await ol.isReady(split.model)).hasModel) throw new Error(`đã tải nhưng chưa thấy model ${split.model}`);
+    }
+    return { ok: true, detail: `Ollama + ${split.model}` };
+  } catch (err) {
+    return { ok: false, detail: err.message };
+  }
 }
 
 module.exports = {

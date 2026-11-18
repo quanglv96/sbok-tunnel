@@ -67,6 +67,25 @@
   </div>
 
   <div class="card">
+    <h3>Tách chương</h3>
+    <p class="muted">Áp dụng từ job kế tiếp. Đổi sang LLM hoặc đổi model: bấm "Kiểm tra lại" để tải Ollama/model.</p>
+    <div class="row" style="align-items: flex-start">
+      <div class="field"><label for="splitMode">Chế độ</label>
+        <select id="splitMode">
+          <option value="">Tự động (LLM nếu sẵn sàng)</option>
+          <option value="heuristic">Theo tiêu đề "Chương N"</option>
+          <option value="llm">LLM (Ollama)</option>
+        </select><div class="err" id="err-splitMode"></div></div>
+      <div class="field"><label for="splitModel">Model Ollama</label>
+        <input id="splitModel" type="text" maxlength="100" placeholder="qwen2.5:3b" /><div class="err" id="err-splitModel"></div></div>
+    </div>
+    <div class="row">
+      <button id="splitSave">Lưu</button>
+      <span id="splitMsg" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card">
     <h3>Log</h3>
     <pre id="log"></pre>
   </div>
@@ -182,7 +201,23 @@
       }
     });
 
+    // ---- Tách chương (FEAT-007) ----
+    async function loadSplit() {
+      const { split } = await window.sbok.split.get();
+      el('splitMode').value = split.mode;
+      el('splitModel').value = split.model;
+    }
+    el('splitSave').addEventListener('click', async () => {
+      const r = await window.sbok.split.save({ mode: el('splitMode').value, model: el('splitModel').value });
+      const errors = r.errors || {};
+      el('err-splitMode').textContent = errors.mode || '';
+      el('err-splitModel').textContent = errors.model || '';
+      el('splitMsg').textContent = r.ok ? 'Đã lưu, áp dụng từ job kế tiếp' : 'Chưa lưu: kiểm tra các ô báo đỏ';
+      el('splitMsg').className = r.ok ? 'ok' : 'bad';
+    });
+
     window.sbok.snapshot().then((s) => { render(s); s.logs.forEach(append); });
+    loadSplit();
     window.sbok.onState(render);
     window.sbok.onLog(append);
     loadTts();

@@ -4,7 +4,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, dialog } = require
 const path = require('path');
 const { loadConfig, loadEnvFile } = require('./src/config');
 const { startupCheck } = require('./src/startupCheck');
-const { readSettings, writeSettings } = require('./src/settings');
+const { SPLIT_MODES, readSettings, resolveSplit, validateSplit, writeSettings } = require('./src/settings');
 const { ensureRuntime } = require('./src/runtimeSetup');
 const { createTunnelManager } = require('./src/tunnelManager');
 const { createJobServer } = require('./src/jobServer');
@@ -81,7 +81,8 @@ function prepare() {
       state.progress = p;
       pushState();
     };
-    const rt = await ensureRuntime({ dataDir: state.dataDir, log, onProgress });
+    // FEAT-007 (BR-4): mode llm/chưa chọn thì tự cài Ollama + pull model
+    const rt = await ensureRuntime({ dataDir: state.dataDir, log, onProgress, split: resolveSplit(settings, process.env) });
     state.progress = null;
     // #109: không rơi về PATH; thiếu thì trỏ vào bản trong {dataDir}/runtime để startup check báo đỏ
     const rtDir = path.join(state.dataDir, 'runtime');
@@ -98,6 +99,7 @@ function prepare() {
     const result = await startupCheck(config);
     const setupCheck = { name: 'Cài môi trường', ok: rt.errors.length === 0, detail: rt.errors.join('; ') || 'đủ' };
     state.checks = [...result.checks, setupCheck];
+    if (rt.llm) state.checks.push({ name: 'LLM tách chương', ok: rt.llm.ok, detail: rt.llm.detail });
     state.ready = result.ok && setupCheck.ok;
     state.setup = setupCheck.ok ? 'ok' : 'error';
     state.checks.forEach((c) => log(`[startup] ${c.ok ? 'OK ' : 'LỖI'} ${c.name}: ${c.detail}`));
@@ -154,6 +156,8 @@ async function boot() {
         await processJob(job, {
           config, backend, uploader, log,
           tts: job.resume ? null : resolveTts(readSettings(settingsFile()), process.env),
+          // FEAT-007: chế độ tách chương; lượt thử lại dùng model đã chụp trong job.json
+          split: job.resume ? null : resolveSplit(readSettings(settingsFile()), process.env),
           scheduleRetry: (s) => retry.schedule(s),
           cancelRetry: (id) => retry.cancel(id),
         });
@@ -215,6 +219,16 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle('tts:voices', (_e, model) => ttsController.voices(model));
     ipcMain.handle('tts:save', (_e, input) => ttsController.save(input));
     ipcMain.handle('tts:preview', (_e, input) => ttsController.preview(input));
+    // FEAT-007: cấu hình tách chương (main kiểm hợp lệ); đổi model thì bấm "Kiểm tra lại" để tải
+    ipcMain.handle('split:get', () => ({ split: resolveSplit(readSettings(settingsFile()), process.env), modes: SPLIT_MODES }));
+    ipcMain.handle('split:save', (_e, input) => {
+      const checked = validateSplit(input);
+      if (checked.ok) {
+        writeSettings(settingsFile(), { ...readSettings(settingsFile()), split: checked.value });
+        log(`[split] Đã lưu chế độ tách chương "${checked.value.mode || 'tự động'}", model ${checked.value.model}`);
+      }
+      return checked;
+    });
     boot().catch((err) => log(`Khởi động lỗi: ${err.message}`));
   });
   app.on('second-instance', () => win && win.show());

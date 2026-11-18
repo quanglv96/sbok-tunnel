@@ -1,0 +1,80 @@
+'use strict';
+
+const { chat } = require('../ollama');
+
+// Phần đầu mỗi trang gửi cho LLM: tổng ~30k ký tự cho vừa ngữ cảnh model 3b; sách dài thì mỗi trang ít ký tự hơn
+const MAX_PROMPT_CHARS = 30_000;
+const PAGE_HEAD_MAX = 300;
+const PAGE_HEAD_MIN = 40;
+const TITLE_MAX = 500;
+
+/** Lỗi tách chương bằng LLM (Ollama lỗi/timeout/thiếu bộ nhớ, kết quả vi phạm BR-5): được thử lại (BR-6). */
+class LlmSplitError extends Error {}
+
+const SYSTEM_PROMPT = [
+  'Bạn chia một cuốn sách thành các chương. Đầu vào là phần đầu của từng trang, mỗi trang mở đầu bằng [Trang N].',
+  'Dựa vào mục lục (nếu có) và tiêu đề ở đầu trang, liệt kê các chương theo thứ tự.',
+  'start_page là số N của trang (theo [Trang N]) nơi chương bắt đầu, không phải số trang in trong mục lục.',
+  'Phần trước chương đầu tiên (bìa, lời nói đầu, mục lục) là chương "Giới thiệu" bắt đầu ở trang 1.',
+  'Chỉ trả JSON dạng {"chapters":[{"title":"...","start_page":1}]}.',
+].join(' ');
+
+function buildPrompt(pages) {
+  const budget = Math.max(PAGE_HEAD_MIN, Math.min(PAGE_HEAD_MAX, Math.floor(MAX_PROMPT_CHARS / Math.max(pages.length, 1))));
+  return pages.map((p, i) => `[Trang ${i + 1}] ${String(p || '').replace(/\s+/g, ' ').trim().slice(0, budget)}`).join('\n');
+}
+
+/** BR-5: JSON đọc được, ≥1 chương, start_page nguyên trong [1, pageCount] và tăng dần, tiêu đề không rỗng. */
+function parseChapters(content, pageCount) {
+  let data;
+  try {
+    data = JSON.parse(content);
+  } catch {
+    throw new LlmSplitError('LLM trả kết quả không phải JSON');
+  }
+  const list = Array.isArray(data) ? data : data && Array.isArray(data.chapters) ? data.chapters : null;
+  if (!list) throw new LlmSplitError('LLM trả JSON không có danh sách chương');
+  if (list.length === 0) throw new LlmSplitError('LLM trả danh sách chương rỗng');
+  let prev = 0;
+  return list.map((c, i) => {
+    const title = c && typeof c.title === 'string' ? c.title.trim() : '';
+    const raw = c && c.start_page;
+    const page = typeof raw === 'number' || (typeof raw === 'string' && raw.trim()) ? Number(raw) : NaN;
+    if (!title) throw new LlmSplitError(`Chương ${i + 1}: tiêu đề rỗng`);
+    if (!Number.isInteger(page) || page < 1 || page > pageCount) {
+      throw new LlmSplitError(`Chương ${i + 1}: start_page ${raw} ngoài [1, ${pageCount}]`);
+    }
+    if (page <= prev) throw new LlmSplitError(`Chương ${i + 1}: start_page ${page} không tăng dần`);
+    prev = page;
+    return { title: title.slice(0, TITLE_MAX), startPage: page };
+  });
+}
+
+/** Cắt text theo trang; trang trước chương đầu gộp thành "Giới thiệu". Cùng dạng `splitChapters`: [{index,title,text}]. */
+function cutByPages(pages, chapters) {
+  const parts = chapters[0].startPage > 1 ? [{ title: 'Giới thiệu', startPage: 1 }, ...chapters] : chapters;
+  return parts
+    .map((c, i) => {
+      const end = i + 1 < parts.length ? parts[i + 1].startPage - 1 : pages.length;
+      return { title: c.title, text: pages.slice(c.startPage - 1, end).join('\n').trim() };
+    })
+    .filter((p) => p.text)
+    .map((p, i) => ({ index: i + 1, ...p }));
+}
+
+/** Tách chương bằng LLM. Mọi lỗi (gọi Ollama, kết quả sai) ném `LlmSplitError`. */
+async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
+  if (!Array.isArray(pages) || pages.length === 0) throw new LlmSplitError('Không có text trang để tách');
+  let content;
+  try {
+    content = await chatFn(model, [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: buildPrompt(pages) },
+    ], timeoutMs ? { timeoutMs } : {});
+  } catch (err) {
+    throw new LlmSplitError(`Gọi Ollama lỗi: ${err.message}`);
+  }
+  return cutByPages(pages, parseChapters(content, pages.length));
+}
+
+module.exports = { LlmSplitError, buildPrompt, cutByPages, parseChapters, splitWithLlm };

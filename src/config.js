@@ -38,6 +38,9 @@ function loadConfig(env = process.env, workDir = path.join(os.homedir(), '.sbok-
     workDir,
     cacheDir: path.join(workDir, 'cache'),
     jobsDir: path.join(workDir, 'jobs'),
+    // FEAT-007: báo admin khi tách chương LLM lỗi hẳn (thiếu một trong hai → chỉ log)
+    adminAlertUrl: (env.SBOK_ADMIN_ALERT_URL || '').trim().replace(/\/+$/, ''),
+    adminApiKey: (env.SBOK_ADMIN_API_KEY || '').trim(),
     r2: {
       endpoint: env.R2_ENDPOINT || '',
       bucket: env.R2_BUCKET || '',

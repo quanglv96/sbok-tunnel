@@ -1,10 +1,14 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { runScan } = require('./sandbox/scanWorker');
 const { extractText } = require('./extract/pdfText');
 const { splitChapters } = require('./extract/chapterSplitter');
+const { splitWithLlm } = require('./extract/llmSplitter');
+const { isReady: ollamaReady } = require('./ollama');
+const { notifyChapterSplitFailed } = require('./adminAlert');
 const { synthesizeBatch } = require('./tts/ttsRunner');
 const { validateTts } = require('./ttsSettings');
 const { MAX_RETRIES, TtsError, nextRetry, readJob, removeJob, saveJob } = require('./retryQueue');
@@ -55,6 +59,7 @@ async function processJob(job, ctx) {
   const { taskId, pdfPath, fileName } = job;
   const textDir = path.join(config.jobsDir, taskId);
   let state;
+  let splitState;
   try {
     await backend.progress(taskId, 'VERIFYING');
     const violation = await scan(pdfPath);
@@ -66,29 +71,20 @@ async function processJob(job, ctx) {
 
     log(`Task ${taskId}: qua kiểm tra an toàn, đang trích chữ`);
     await backend.progress(taskId, 'PARSING');
-    const { text, title, author } = await extract(pdfPath);
-    const chapters = splitChapters(text);
-    const bookTitle = (title || fileName.replace(/\.pdf$/i, '') || 'Không tên').slice(0, 500);
-    log(`Task ${taskId}: ${text.length} ký tự, ${chapters.length} chương`);
-    if (chapters.length === 0) {
-      await backend.failed(taskId, 'Không trích được chữ từ PDF (có thể là ảnh scan)');
-      return;
-    }
-    // BR-16/BR-18: cấu hình đọc sai -> lỗi ngay, không đọc tiếp
-    const checked = ctx.tts ? validateTts(ctx.tts, null) : { ok: true };
-    if (!checked.ok) {
-      await backend.failed(taskId, `Cấu hình đọc không hợp lệ: ${Object.values(checked.errors).join('; ')}`);
-      return;
-    }
-
-    fs.mkdirSync(textDir, { recursive: true });
-    for (const ch of chapters) fs.writeFileSync(path.join(textDir, `${ch.index}.txt`), spokenText(bookTitle, ch), 'utf8');
-    state = {
-      taskId, fileName, bookTitle, author: author ? author.slice(0, 300) : null,
-      chapters: chapters.map((ch) => ({ index: ch.index, title: ch.title, chars: ch.text.length })),
-      done: {}, reported: [], attempt: 0, nextRetryAt: null, tts: ctx.tts || null,
+    const { text, title, author, pages } = await extract(pdfPath);
+    const base = {
+      taskId, fileName, bookTitle: (title || fileName.replace(/\.pdf$/i, '') || 'Không tên').slice(0, 500),
+      author: author ? author.slice(0, 300) : null, tts: ctx.tts || null,
     };
-    saveJob(config.jobsDir, state);
+    if (await useLlm(ctx)) {
+      // FEAT-007 (BR-6): lưu text từng trang trước khi PDF bị xoá để lượt thử lại tách được
+      fs.mkdirSync(textDir, { recursive: true });
+      fs.writeFileSync(pagesFile(config.jobsDir, taskId), JSON.stringify(pages || [text]), 'utf8');
+      splitState = { ...base, phase: 'split', model: ctx.split.model, splitAttempt: 0, chapters: [], attempt: 0, nextRetryAt: null };
+      saveJob(config.jobsDir, splitState);
+    } else {
+      state = await prepareChapters(base, splitChapters(text), text.length, ctx);
+    }
   } catch (err) {
     if (isRejected(err)) {
       stopJob(taskId, err, ctx);
@@ -97,11 +93,138 @@ async function processJob(job, ctx) {
     log(`Task ${taskId}: lỗi ${err.message}`);
     await backend.failed(taskId, 'Xử lý thất bại').catch(() => {});
     removeJob(config.jobsDir, taskId); // BR-16 v13 (TC-144): giữ txt đã ghi, chỉ bỏ job.json để không đọc tiếp
+    fs.rmSync(pagesFile(config.jobsDir, taskId), { force: true });
     return;
   } finally {
     fs.rmSync(pdfPath, { force: true });
   }
+  if (splitState) return runLlmSplit(splitState, ctx);
   if (state) await runTts(state, ctx);
+}
+
+/**
+ * Ghi txt chương + `job.json` để TTS. Không có chương hoặc cấu hình đọc sai → báo failed, trả null.
+ * `base`: { taskId, fileName, bookTitle, author, tts }.
+ */
+async function prepareChapters(base, chapters, chars, ctx) {
+  const { config, backend, log = console.log } = ctx;
+  const { taskId, bookTitle } = base;
+  log(`Task ${taskId}: ${chars} ký tự, ${chapters.length} chương`);
+  if (chapters.length === 0) {
+    await backend.failed(taskId, 'Không trích được chữ từ PDF (có thể là ảnh scan)');
+    return null;
+  }
+  // BR-16/BR-18: cấu hình đọc sai -> lỗi ngay, không đọc tiếp
+  const checked = base.tts ? validateTts(base.tts, null) : { ok: true };
+  if (!checked.ok) {
+    await backend.failed(taskId, `Cấu hình đọc không hợp lệ: ${Object.values(checked.errors).join('; ')}`);
+    return null;
+  }
+
+  const textDir = path.join(config.jobsDir, taskId);
+  fs.mkdirSync(textDir, { recursive: true });
+  for (const ch of chapters) fs.writeFileSync(path.join(textDir, `${ch.index}.txt`), spokenText(bookTitle, ch), 'utf8');
+  const state = {
+    taskId, fileName: base.fileName, bookTitle, author: base.author,
+    chapters: chapters.map((ch) => ({ index: ch.index, title: ch.title, chars: ch.text.length })),
+    done: {}, reported: [], attempt: 0, nextRetryAt: null, tts: base.tts,
+  };
+  saveJob(config.jobsDir, state);
+  return state;
+}
+
+/** FEAT-007: text từng trang lưu cho lượt thử lại tách chương LLM (BR-6); xoá khi tách xong hoặc task kết thúc. */
+const pagesFile = (jobsDir, taskId) => path.join(jobsDir, taskId, 'pages.json');
+
+function readPages(jobsDir, taskId) {
+  try {
+    const pages = JSON.parse(fs.readFileSync(pagesFile(jobsDir, taskId), 'utf8'));
+    return Array.isArray(pages) && pages.length ? pages.map((p) => String(p ?? '')) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * FEAT-007 (BR-2, AC-3): mode đã chọn thì theo đó; chưa chọn thì llm khi Ollama chạy và có model.
+ * Không có `ctx.split` (lượt đọc tiếp, caller cũ) = logic hiện tại.
+ */
+async function useLlm(ctx) {
+  const split = ctx.split;
+  if (!split || split.mode === 'heuristic') return false;
+  if (split.mode === 'llm') return true;
+  const st = await ((ctx.deps && ctx.deps.ollamaReady) || ollamaReady)(split.model);
+  return st.running && st.hasModel;
+}
+
+/**
+ * FEAT-007: tách chương bằng LLM từ pages.json rồi chạy TTS như cũ. Lỗi LLM → thử lại 1/5/15 phút (BR-6);
+ * hết lượt → failed + báo admin, không chuyển sang logic hiện tại (BR-7).
+ */
+async function runLlmSplit(s, ctx) {
+  const { config, backend, log = console.log, deps = {} } = ctx;
+  const { taskId } = s;
+  const cleanup = () => {
+    removeJob(config.jobsDir, taskId);
+    fs.rmSync(pagesFile(config.jobsDir, taskId), { force: true });
+  };
+  let state;
+  try {
+    const pages = readPages(config.jobsDir, taskId);
+    if (!pages) {
+      log(`Task ${taskId}: không đọc được pages.json, không tách chương được`);
+      await backend.failed(taskId, 'Xử lý thất bại');
+      cleanup();
+      return;
+    }
+    log(`Task ${taskId}: tách chương bằng LLM (${s.model})`
+      + `${s.splitAttempt ? `, thử lại lần ${s.splitAttempt}/${MAX_RETRIES}` : ''}`);
+    let chapters;
+    try {
+      chapters = await (deps.splitWithLlm || splitWithLlm)(pages, { model: s.model });
+    } catch (err) {
+      await llmFailed(s, err, ctx, cleanup);
+      return;
+    }
+    fs.rmSync(pagesFile(config.jobsDir, taskId), { force: true });
+    state = await prepareChapters(s, chapters, pages.reduce((n, p) => n + p.length, 0), ctx);
+    if (!state) removeJob(config.jobsDir, taskId);
+  } catch (err) {
+    if (isRejected(err)) {
+      stopJob(taskId, err, ctx);
+      fs.rmSync(pagesFile(config.jobsDir, taskId), { force: true });
+      return;
+    }
+    log(`Task ${taskId}: lỗi ${err.message}`);
+    await backend.failed(taskId, 'Xử lý thất bại').catch(() => {});
+    cleanup();
+    return;
+  }
+  if (state) await runTts(state, ctx);
+}
+
+async function llmFailed(s, err, ctx, cleanup) {
+  const { config, backend, log = console.log, deps = {} } = ctx;
+  const { taskId } = s;
+  const next = nextRetry(s.splitAttempt);
+  if (next) {
+    s.splitAttempt = next.attempt;
+    s.nextRetryAt = next.nextRetryAt;
+    saveJob(config.jobsDir, s);
+    const msg = `Tách chương thử lại lần ${next.attempt}/${MAX_RETRIES} sau ${next.minutes} phút`;
+    log(`Task ${taskId}: tách chương LLM lỗi (${err.message}); ${msg.toLowerCase()}`);
+    await backend.progress(taskId, 'RETRYING', msg).catch((e) => { if (isRejected(e)) throw e; });
+    ctx.scheduleRetry(s);
+    return;
+  }
+  log(`Task ${taskId}: tách chương LLM lỗi sau ${MAX_RETRIES} lần thử lại (${err.message})`);
+  await backend.failed(taskId, `Tách chương lỗi, đã thử lại ${MAX_RETRIES} lần không được`)
+    .catch((e) => { if (isRejected(e)) throw e; });
+  cleanup();
+  await (deps.notifyAdmin || notifyChapterSplitFailed)(config, {
+    taskId, bookTitle: s.bookTitle, model: s.model, attempts: MAX_RETRIES, error: err.message,
+    host: os.hostname(), occurredAt: new Date().toISOString(),
+  }, { log });
 }
 
 /** Lượt đọc tiếp: nạp `job.json`, chỉ đọc chương chưa xong, dùng cấu hình đã chụp lúc job bắt đầu (BR-17). */
@@ -114,6 +237,8 @@ async function resumeJob(taskId, ctx) {
   }
   state.nextRetryAt = null;
   saveJob(config.jobsDir, state);
+  // FEAT-007: job đang chờ thử lại tách chương LLM
+  if (state.phase === 'split') return runLlmSplit(state, ctx);
   log(`Task ${taskId}: đọc tiếp lần ${state.attempt}/${MAX_RETRIES}`);
   await runTts(state, ctx);
 }

@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('sbok', {
     save: (input) => ipcRenderer.invoke('tts:save', input),
     preview: (input) => ipcRenderer.invoke('tts:preview', input),
   },
+  split: {
+    get: () => ipcRenderer.invoke('split:get'),
+    save: (input) => ipcRenderer.invoke('split:save', input),
+  },
   onState: (cb) => ipcRenderer.on('sbok:state', (_e, s) => cb(s)),
   onLog: (cb) => ipcRenderer.on('sbok:log', (_e, line) => cb(line)),
 });

@@ -77,7 +77,9 @@ async function extractText(pdfPath) {
       pages.push(lines);
     }
     const info = (meta && meta.info) || {};
-    return { text: filterBodyText(pages).join('\n'), title: info.Title || null, author: info.Author || null };
+    const bodyPages = filterBodyText(pages);
+    // FEAT-007: `pages` (text từng trang) cho tách chương bằng LLM theo số trang
+    return { text: bodyPages.join('\n'), pages: bodyPages, title: info.Title || null, author: info.Author || null };
   } finally {
     await doc.destroy();
   }
