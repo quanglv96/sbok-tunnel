@@ -27,6 +27,36 @@ function stopJob(taskId, err, { config, log = console.log, cancelRetry }) {
     + 'giữ MP3 và txt');
 }
 
+/** AC-14/BR-14: message lỗi kèm mã nguyên nhân gốc (ECONNREFUSED, UND_ERR_HEADERS_TIMEOUT…) nếu message chưa có. */
+function errText(err) {
+  const msg = String((err && err.message) || err);
+  const code = err && (err.code || (err.cause && err.cause.code));
+  return code && !msg.includes(code) ? `${msg} (${code})` : msg;
+}
+
+/** AC-14: log một bước: "{prefix}: [name] bắt đầu" / "xong (N ms, extra)" / "lỗi (N ms): message (code)". */
+function step(log, prefix, name) {
+  const t0 = Date.now();
+  log(`${prefix}: [${name}] bắt đầu`);
+  return {
+    done: (extra) => log(`${prefix}: [${name}] xong (${Date.now() - t0} ms${extra ? `, ${extra}` : ''})`),
+    fail: (err) => log(`${prefix}: [${name}] lỗi (${Date.now() - t0} ms): ${errText(err)}`),
+  };
+}
+
+/** Chạy `fn` trong một bước có log; `extra(kết quả)` = số liệu ghi khi xong. */
+async function timed(log, prefix, name, fn, extra = () => '') {
+  const s = step(log, prefix, name);
+  try {
+    const r = await fn();
+    s.done(extra(r));
+    return r;
+  } catch (err) {
+    s.fail(err);
+    throw err;
+  }
+}
+
 /** "Chương 2/5 · 40% · tổng 25%": tiến độ chương hiện tại và cả sách (theo số ký tự). */
 function progressText(label, chapterRatio, doneChars, totalChars) {
   const pct = (r) => Math.min(100, Math.floor(r * 100));
@@ -60,30 +90,32 @@ async function processJob(job, ctx) {
   const textDir = path.join(config.jobsDir, taskId);
   let state;
   let splitState;
+  const prefix = `Task ${taskId}`;
   try {
     await backend.progress(taskId, 'VERIFYING');
-    const violation = await scan(pdfPath);
+    const violation = await timed(log, prefix, 'kiểm tra an toàn', () => scan(pdfPath), (v) => (v ? 'vi phạm' : 'qua'));
     if (violation) {
       log(`Task ${taskId}: VI PHẠM ${violation}, huỷ xử lý`);
       await backend.violation(taskId, violation);
       return;
     }
 
-    log(`Task ${taskId}: qua kiểm tra an toàn, đang trích chữ`);
     await backend.progress(taskId, 'PARSING');
-    const { text, title, author, pages } = await extract(pdfPath);
+    const { text, title, author, pages } = await timed(log, prefix, 'trích chữ', () => extract(pdfPath),
+      (r) => `${Array.isArray(r.pages) ? r.pages.length : '?'} trang, ${r.text.length} ký tự`);
     const base = {
       taskId, fileName, bookTitle: (title || fileName.replace(/\.pdf$/i, '') || 'Không tên').slice(0, 500),
       author: author ? author.slice(0, 300) : null, tts: ctx.tts || null,
     };
-    if (await useLlm(ctx)) {
+    if (await useLlm(ctx, prefix)) {
       // FEAT-007 (BR-6): lưu text từng trang trước khi PDF bị xoá để lượt thử lại tách được
       fs.mkdirSync(textDir, { recursive: true });
       fs.writeFileSync(pagesFile(config.jobsDir, taskId), JSON.stringify(pages || [text]), 'utf8');
       splitState = { ...base, phase: 'split', model: ctx.split.model, splitAttempt: 0, chapters: [], attempt: 0, nextRetryAt: null };
       saveJob(config.jobsDir, splitState);
     } else {
-      state = await prepareChapters(base, splitChapters(text), text.length, ctx);
+      const chapters = await timed(log, prefix, 'tách chương heuristic', () => splitChapters(text), (c) => `${c.length} chương`);
+      state = await prepareChapters(base, chapters, text.length, ctx);
     }
   } catch (err) {
     if (isRejected(err)) {
@@ -122,15 +154,17 @@ async function prepareChapters(base, chapters, chars, ctx) {
   }
 
   const textDir = path.join(config.jobsDir, taskId);
-  fs.mkdirSync(textDir, { recursive: true });
-  for (const ch of chapters) fs.writeFileSync(path.join(textDir, `${ch.index}.txt`), spokenText(bookTitle, ch), 'utf8');
-  const state = {
-    taskId, fileName: base.fileName, bookTitle, author: base.author,
-    chapters: chapters.map((ch) => ({ index: ch.index, title: ch.title, chars: ch.text.length })),
-    done: {}, reported: [], attempt: 0, nextRetryAt: null, tts: base.tts,
-  };
-  saveJob(config.jobsDir, state);
-  return state;
+  return timed(log, `Task ${taskId}`, 'ghi txt + job.json', () => {
+    fs.mkdirSync(textDir, { recursive: true });
+    for (const ch of chapters) fs.writeFileSync(path.join(textDir, `${ch.index}.txt`), spokenText(bookTitle, ch), 'utf8');
+    const state = {
+      taskId, fileName: base.fileName, bookTitle, author: base.author,
+      chapters: chapters.map((ch) => ({ index: ch.index, title: ch.title, chars: ch.text.length })),
+      done: {}, reported: [], attempt: 0, nextRetryAt: null, tts: base.tts,
+    };
+    saveJob(config.jobsDir, state);
+    return state;
+  }, (st) => `${st.chapters.length} chương, ${st.chapters.reduce((n, c) => n + c.chars, 0)} ký tự`);
 }
 
 /** FEAT-007: text từng trang lưu cho lượt thử lại tách chương LLM (BR-6); xoá khi tách xong hoặc task kết thúc. */
@@ -149,12 +183,18 @@ function readPages(jobsDir, taskId) {
  * FEAT-007 (BR-2, AC-3): mode đã chọn thì theo đó; chưa chọn thì llm khi Ollama chạy và có model.
  * Không có `ctx.split` (lượt đọc tiếp, caller cũ) = logic hiện tại.
  */
-async function useLlm(ctx) {
+async function useLlm(ctx, prefix) {
   const split = ctx.split;
-  if (!split || split.mode === 'heuristic') return false;
-  if (split.mode === 'llm') return true;
+  const s = step(ctx.log || console.log, prefix, 'chọn chế độ');
+  if (!split || split.mode === 'heuristic' || split.mode === 'llm') {
+    const mode = split ? split.mode : 'heuristic';
+    s.done(`${mode}, nguồn ${split ? split.source || 'default' : 'mặc định'}`);
+    return mode === 'llm';
+  }
   const st = await ((ctx.deps && ctx.deps.ollamaReady) || ollamaReady)(split.model);
-  return st.running && st.hasModel;
+  const llm = st.running && st.hasModel;
+  s.done(`${llm ? 'llm' : 'heuristic'}, tự động: running=${st.running}, hasModel=${st.hasModel}`);
+  return llm;
 }
 
 /**
@@ -177,12 +217,17 @@ async function runLlmSplit(s, ctx) {
       cleanup();
       return;
     }
-    log(`Task ${taskId}: tách chương bằng LLM (${s.model})`
-      + `${s.splitAttempt ? `, thử lại lần ${s.splitAttempt}/${MAX_RETRIES}` : ''}`);
+    const attempt = s.splitAttempt ? `thử lại lần ${s.splitAttempt}/${MAX_RETRIES}` : 'lần đầu';
+    const st = step(log, `Task ${taskId}`, `tách chương LLM ${s.model}, ${attempt}`);
     let chapters;
     try {
-      chapters = await (deps.splitWithLlm || splitWithLlm)(pages, { model: s.model });
+      const r = await (deps.splitWithLlm || splitWithLlm)(pages, { model: s.model });
+      chapters = r.chapters;
+      const x = r.stats || {};
+      st.done(`${x.pages} trang, promptChars ${x.promptChars}, numCtx ${x.numCtx}, firstByteMs ${x.firstByteMs}, `
+        + `totalMs ${x.totalMs}, prompt_eval_count ${x.prompt_eval_count}, eval_count ${x.eval_count}, ${chapters.length} chương`);
     } catch (err) {
+      st.fail(err);
       await llmFailed(s, err, ctx, cleanup);
       return;
     }
@@ -212,12 +257,12 @@ async function llmFailed(s, err, ctx, cleanup) {
     s.nextRetryAt = next.nextRetryAt;
     saveJob(config.jobsDir, s);
     const msg = `Tách chương thử lại lần ${next.attempt}/${MAX_RETRIES} sau ${next.minutes} phút`;
-    log(`Task ${taskId}: tách chương LLM lỗi (${err.message}); ${msg.toLowerCase()}`);
+    log(`Task ${taskId}: tách chương LLM lỗi (${errText(err)}); ${msg.toLowerCase()}`);
     await backend.progress(taskId, 'RETRYING', msg).catch((e) => { if (isRejected(e)) throw e; });
     ctx.scheduleRetry(s);
     return;
   }
-  log(`Task ${taskId}: tách chương LLM lỗi sau ${MAX_RETRIES} lần thử lại (${err.message})`);
+  log(`Task ${taskId}: tách chương LLM lỗi sau ${MAX_RETRIES} lần thử lại (${errText(err)})`);
   await backend.failed(taskId, `Tách chương lỗi, đã thử lại ${MAX_RETRIES} lần không được`)
     .catch((e) => { if (isRejected(e)) throw e; });
   cleanup();
@@ -259,9 +304,11 @@ async function runTts(state, ctx) {
   const send = (ch) => {
     if (stopped) return Promise.resolve();
     const d = state.done[ch.index];
+    const t0 = Date.now();
     const p = backend.chapterDone(taskId, state.bookTitle, state.author,
       { index: ch.index, title: ch.title, sizeBytes: d.sizeBytes, durationSec: d.durationSec })
       .then((ok) => {
+        log(`Task ${taskId}: [báo chương ${ch.index}] xong (${Date.now() - t0} ms, ${ok ? 'nhận' : 'không nhận'})`);
         if (!ok) log(`Task ${taskId}: backend không nhận chương ${ch.index}, sẽ gửi lại trước khi chốt`);
         if (ok && !state.reported.includes(ch.index)) {
           state.reported.push(ch.index);
@@ -269,7 +316,7 @@ async function runTts(state, ctx) {
         }
       })
       .catch((err) => (isRejected(err) ? halt(err)
-        : log(`Task ${taskId}: báo chương ${ch.index} lỗi (${err.message}), sẽ gửi lại`)));
+        : log(`Task ${taskId}: báo chương ${ch.index} lỗi (${errText(err)}), sẽ gửi lại`)));
     sends.push(p);
     return p;
   };
@@ -299,7 +346,7 @@ async function runTts(state, ctx) {
         if (c) {
           cur = Math.min(Number(c[1]) - 1, pending.length - 1);
           startedAt = Date.now();
-          log(`Task ${taskId}: TTS ${label().toLowerCase()} (${pending[cur].chars} ký tự)`);
+          log(`Task ${taskId}: [TTS ${label().toLowerCase()}] bắt đầu (${pending[cur].chars} ký tự)`);
           void report(progressText(label(), 0, doneChars, totalChars));
         }
         const m = /chunk (\d+)\/(\d+)/.exec(line);
@@ -311,7 +358,8 @@ async function runTts(state, ctx) {
         doneChars += ch.chars;
         state.done[ch.index] = { sizeBytes: fs.statSync(items[i].out).size, durationSec };
         save();
-        log(`Task ${taskId}: xong chương ${chapters.indexOf(ch) + 1}/${chapters.length} sau ${Math.round((Date.now() - startedAt) / 1000)} s`);
+        log(`Task ${taskId}: [TTS chương ${chapters.indexOf(ch) + 1}/${chapters.length}] xong (${Date.now() - startedAt} ms, `
+          + `${ch.chars} ký tự)`);
         void send(ch);
       };
       try {
@@ -328,7 +376,7 @@ async function runTts(state, ctx) {
     await Promise.all(sends);
     for (const ch of chapters) if (!state.reported.includes(ch.index)) await send(ch);
     checkStopped();
-    await backend.complete(taskId);
+    await timed(log, `Task ${taskId}`, 'báo hoàn tất', () => backend.complete(taskId));
     log(`Task ${taskId}: hoàn tất ${chapters.length} chương, MP3 và txt giữ ở ${mp3Dir}, ${textDir}`);
     removeJob(config.jobsDir, taskId);
   } catch (err) {
@@ -381,15 +429,16 @@ async function doUpload(taskId, index, { config, backend, uploader, log = consol
     return;
   }
   const r2Key = `books/${taskId}/${index}.mp3`;
+  const t0 = Date.now();
   try {
     await uploader.upload(r2Key, mp3);
   } catch (err) {
-    log(`Đẩy chương ${taskId}/${index} lên R2 thất bại (${err.message}); MP3 giữ ở ${mp3}`);
+    log(`Đẩy chương ${taskId}/${index} lên R2 thất bại (${Date.now() - t0} ms): ${errText(err)}; MP3 giữ ở ${mp3}`);
     await backend.chapterUploadFailed(taskId, index, false);
     return;
   }
   await backend.chapterUploaded(taskId, index, r2Key, fs.statSync(mp3).size);
-  log(`Đẩy chương ${taskId}/${index} lên R2 xong`);
+  log(`Đẩy chương ${taskId}/${index} lên R2 xong (${Date.now() - t0} ms)`);
 }
 
 module.exports = { processJob, progressText, spokenText, uploadChapter };

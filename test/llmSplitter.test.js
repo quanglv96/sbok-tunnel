@@ -3,11 +3,13 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { LlmSplitError, buildPrompt, splitWithLlm } = require('../src/extract/llmSplitter');
-const { chat, isReady, pull } = require('../src/ollama');
+const { NUM_CTX, isReady, pull } = require('../src/ollama');
 
 const PAGES = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
-const reply = (obj) => async () => (typeof obj === 'string' ? obj : JSON.stringify(obj));
-const split = (content, pages = PAGES) => splitWithLlm(pages, { model: 'qwen2.5:3b', chatFn: reply(content) });
+const STATS = { prompt_eval_count: 900, eval_count: 40, firstByteMs: 1200, totalMs: 1500 };
+const reply = (obj) => async () => ({ content: typeof obj === 'string' ? obj : JSON.stringify(obj), stats: STATS });
+const split = async (content, pages = PAGES) =>
+  (await splitWithLlm(pages, { model: 'qwen2.5:3b', chatFn: reply(content) })).chapters;
 
 test('TC-2: 2 chương start_page 1/4 trên 6 trang → C1 = trang 1-3, C2 = trang 4-6', async () => {
   const chapters = await split({ chapters: [{ title: 'C1', start_page: 1 }, { title: 'C2', start_page: 4 }] });
@@ -77,21 +79,22 @@ test('buildPrompt: đánh số trang, sách dài thì cắt mỗi trang ngắn h
   assert.ok(long.startsWith(`[Trang 1] ${'x'.repeat(40)}\n`));
 });
 
-const fakeRes = (status, body) => ({ ok: status < 300, status, text: async () => body, json: async () => JSON.parse(body) });
-
-test('ollama.chat ghép nội dung stream; dòng error → ném lỗi; HTTP lỗi → ném lỗi', async () => {
-  let sent;
-  const ndjson = ['{"message":{"content":"{\\"chapters\\":"}}', '{"message":{"content":"[]}"},"done":true}'].join('\n');
-  const content = await chat('qwen2.5:3b', [{ role: 'user', content: 'x' }], {
-    fetchFn: async (url, opts) => { sent = { url, body: JSON.parse(opts.body) }; return fakeRes(200, ndjson); },
-  });
-  assert.strictEqual(content, '{"chapters":[]}');
-  assert.ok(sent.url.endsWith('/api/chat'));
-  assert.strictEqual(sent.body.format, 'json');
-  await assert.rejects(chat('m', [], { fetchFn: async () => fakeRes(200, '{"error":"model requires more system memory"}') }),
-    /more system memory/);
-  await assert.rejects(chat('m', [], { fetchFn: async () => fakeRes(500, 'boom') }), /HTTP 500/);
+test('TC-32: lỗi socket chỉ có mã trong err.code / err.cause.code → message LlmSplitError chứa mã', async () => {
+  const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:11434'), { code: 'ECONNREFUSED' });
+  await assert.rejects(splitWithLlm(PAGES, { model: 'm', chatFn: async () => { throw refused; } }),
+    (err) => err instanceof LlmSplitError && err.message === 'Gọi Ollama lỗi: connect ECONNREFUSED 127.0.0.1:11434');
+  const undici = new TypeError('fetch failed', { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } });
+  await assert.rejects(splitWithLlm(PAGES, { model: 'm', chatFn: async () => { throw undici; } }),
+    (err) => err instanceof LlmSplitError && err.message === 'Gọi Ollama lỗi: fetch failed (UND_ERR_HEADERS_TIMEOUT)');
 });
+
+test('TC-34: splitWithLlm trả kèm số liệu chat + số trang, độ dài prompt, numCtx (không chứa text trang)', async () => {
+  const r = await splitWithLlm(PAGES, { model: 'm', chatFn: reply([{ title: 'C1', start_page: 1 }]) });
+  assert.deepStrictEqual(r.stats, { ...STATS, pages: 6, promptChars: buildPrompt(PAGES).length, numCtx: NUM_CTX });
+  assert.ok(!JSON.stringify(r.stats).includes('p1'));
+});
+
+const fakeRes = (status, body) => ({ ok: status < 300, status, text: async () => body, json: async () => JSON.parse(body) });
 
 test('ollama.isReady / pull: có model theo tên hoặc :latest; lỗi kết nối = không chạy; pull báo success', async () => {
   const tags = JSON.stringify({ models: [{ name: 'qwen2.5:3b' }, { name: 'llama3:latest' }] });

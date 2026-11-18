@@ -1,5 +1,6 @@
 'use strict';
 
+const http = require('http');
 const { spawn } = require('child_process');
 
 /** FEAT-007: Ollama chỉ nghe local; hằng số, không đọc từ env/IPC. */
@@ -8,24 +9,42 @@ const OLLAMA_URL = `http://${OLLAMA_HOST}`;
 const JSON_HEADERS = { 'content-type': 'application/json' };
 // Ngữ cảnh đủ cho phần đầu mọi trang của sách dài với model 3b (KV cache vẫn vừa máy ít RAM)
 const NUM_CTX = 16384;
+// B1: tổng thời gian chờ một lần gọi chat; prefill prompt dài trên CPU có thể > 5 phút
+const CHAT_TIMEOUT_MS = 30 * 60_000;
 
-/**
- * Đọc hết body NDJSON (stream: true để không vướng headersTimeout 5 phút của fetch khi model chạy lâu).
- * Dòng có `error` → ném lỗi.
- */
-async function readNdjson(res, what) {
-  const text = await res.text();
-  if (!res.ok) throw new Error(`${what}: Ollama HTTP ${res.status} ${text.slice(0, 200)}`.trim());
-  const lines = text.split('\n').filter((l) => l.trim()).map((l) => {
-    try {
-      return JSON.parse(l);
-    } catch {
-      return {};
-    }
-  });
+const parseLine = (l) => {
+  try {
+    return JSON.parse(l);
+  } catch {
+    return {};
+  }
+};
+
+/** Tách body NDJSON thành các object; dòng có `error` → ném lỗi. */
+function parseNdjsonLines(text, what) {
+  const lines = text.split('\n').filter((l) => l.trim()).map(parseLine);
   const failed = lines.find((l) => l.error);
   if (failed) throw new Error(`${what}: ${String(failed.error).slice(0, 300)}`);
   return lines;
+}
+
+/** Đọc body của fetch theo từng dòng (stream) để báo tiến độ; không có body stream thì đọc cả text. */
+async function forEachLine(res, onLine) {
+  if (!res.body) {
+    (await res.text()).split('\n').forEach(onLine);
+    return;
+  }
+  const dec = new TextDecoder();
+  let buf = '';
+  for await (const chunk of res.body) {
+    buf += dec.decode(chunk, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      onLine(buf.slice(0, i));
+      buf = buf.slice(i + 1);
+    }
+  }
+  onLine(buf + dec.decode());
 }
 
 const hasName = (names, model) => names.some((n) => n === model || n === `${model}:latest`);
@@ -62,25 +81,83 @@ function serve(exePath, env) {
   return child;
 }
 
-/** Tải model qua API của server đang chạy (model lưu theo OLLAMA_MODELS của server). */
-async function pull(model, { fetchFn = fetch } = {}) {
+/**
+ * Tải model qua API của server đang chạy (model lưu theo OLLAMA_MODELS của server). Ollama gửi header và dòng
+ * tiến độ ngay nên dùng fetch được; `onProgress(completed, total)` gọi theo từng dòng có `total`.
+ */
+async function pull(model, { fetchFn = fetch, onProgress } = {}) {
+  const what = `Pull ${model}`;
   const res = await fetchFn(`${OLLAMA_URL}/api/pull`, {
     method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ model, stream: true }),
   });
-  const lines = await readNdjson(res, `Pull ${model}`);
-  if (!lines.some((l) => l.status === 'success')) throw new Error(`Pull ${model}: Ollama không báo success`);
-}
-
-/** Gọi /api/chat (format json, temperature 0); trả nội dung trả lời ghép từ các dòng stream. */
-async function chat(model, messages, { fetchFn = fetch, timeoutMs = 10 * 60_000 } = {}) {
-  const res = await fetchFn(`${OLLAMA_URL}/api/chat`, {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ model, messages, stream: true, format: 'json', options: { temperature: 0, num_ctx: NUM_CTX } }),
-    signal: AbortSignal.timeout(timeoutMs),
+  if (!res.ok) throw new Error(`${what}: Ollama HTTP ${res.status} ${(await res.text()).slice(0, 200)}`.trim());
+  let success = false;
+  await forEachLine(res, (line) => {
+    if (!line.trim()) return;
+    const l = parseLine(line);
+    if (l.error) throw new Error(`${what}: ${String(l.error).slice(0, 300)}`);
+    if (l.status === 'success') success = true;
+    if (onProgress && l.total) onProgress(l.completed || 0, l.total);
   });
-  const lines = await readNdjson(res, 'Chat');
-  return lines.map((l) => (l.message && typeof l.message.content === 'string' ? l.message.content : '')).join('');
+  if (!success) throw new Error(`${what}: Ollama không báo success`);
 }
 
-module.exports = { NUM_CTX, OLLAMA_HOST, OLLAMA_URL, chat, isReady, pull, serve, waitReady };
+/**
+ * Gọi /api/chat (format json, temperature 0). B1: dùng `http.request` (không qua fetch/undici có giới hạn chờ header
+ * 5 phút); Ollama chỉ gửi header sau khi xử lý xong prompt. Thời gian chờ duy nhất là `timeoutMs` tổng.
+ * Trả { content, stats }; lỗi socket giữ nguyên `err.code` (ECONNREFUSED…).
+ */
+function chat(model, messages, { requestFn = http.request, timeoutMs = CHAT_TIMEOUT_MS } = {}) {
+  const body = JSON.stringify({ model, messages, stream: true, format: 'json', options: { temperature: 0, num_ctx: NUM_CTX } });
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let req;
+    const settle = (fn, v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(v);
+    };
+    const fail = (err) => settle(reject, err);
+    const timer = setTimeout(() => {
+      fail(new Error(`Ollama timeout sau ${timeoutMs} ms`));
+      req.destroy();
+    }, timeoutMs);
+    req = requestFn(`${OLLAMA_URL}/api/chat`, {
+      method: 'POST', headers: { ...JSON_HEADERS, 'content-length': Buffer.byteLength(body) },
+    }, (res) => {
+      const firstByteMs = Date.now() - started;
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { text += c; });
+      res.on('error', fail);
+      res.on('close', () => { if (!res.complete) fail(new Error('Chat: Ollama đóng kết nối giữa chừng')); });
+      res.on('end', () => {
+        try {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            throw new Error(`Chat: Ollama HTTP ${res.statusCode} ${text.slice(0, 200)}`.trim());
+          }
+          const lines = parseNdjsonLines(text, 'Chat');
+          const last = lines.find((l) => l.done === true);
+          if (!last) throw new Error('Chat: Ollama đóng kết nối trước khi trả xong');
+          const content = lines.map((l) => (l.message && typeof l.message.content === 'string' ? l.message.content : '')).join('');
+          settle(resolve, {
+            content,
+            stats: {
+              prompt_eval_count: last.prompt_eval_count, eval_count: last.eval_count,
+              prompt_eval_duration: last.prompt_eval_duration, eval_duration: last.eval_duration,
+              firstByteMs, totalMs: Date.now() - started,
+            },
+          });
+        } catch (err) {
+          fail(err);
+        }
+      });
+    });
+    req.on('error', fail);
+    req.end(body);
+  });
+}
+
+module.exports = { CHAT_TIMEOUT_MS, NUM_CTX, OLLAMA_HOST, OLLAMA_URL, chat, isReady, parseNdjsonLines, pull, serve, waitReady };

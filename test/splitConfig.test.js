@@ -14,14 +14,16 @@ const { ensureRuntime } = require('../src/runtimeSetup');
 
 test('TC-19: UI thắng env, env thắng mặc định qwen2.5:3b', () => {
   const env = { SBOK_SPLIT_MODE: 'heuristic', SBOK_LLM_MODEL: 'qwen2.5:7b' };
-  assert.deepStrictEqual(resolveSplit({ split: { mode: 'llm', model: 'llama3:8b' } }, env), { mode: 'llm', model: 'llama3:8b' });
-  assert.deepStrictEqual(resolveSplit({}, env), { mode: 'heuristic', model: 'qwen2.5:7b' });
-  assert.deepStrictEqual(resolveSplit({}, {}), { mode: '', model: 'qwen2.5:3b' });
-  assert.deepStrictEqual(resolveSplit(null, { SBOK_SPLIT_MODE: ' LLM ' }), { mode: 'llm', model: 'qwen2.5:3b' });
+  assert.deepStrictEqual(resolveSplit({ split: { mode: 'llm', model: 'llama3:8b' } }, env),
+    { mode: 'llm', model: 'llama3:8b', source: 'ui' });
+  assert.deepStrictEqual(resolveSplit({}, env), { mode: 'heuristic', model: 'qwen2.5:7b', source: 'env' });
+  assert.deepStrictEqual(resolveSplit({}, {}), { mode: '', model: 'qwen2.5:3b', source: 'default' });
+  assert.deepStrictEqual(resolveSplit(null, { SBOK_SPLIT_MODE: ' LLM ' }), { mode: 'llm', model: 'qwen2.5:3b', source: 'env' });
 });
 
 test('TC-20: giá trị lạ = chưa chọn ở nguồn đó; UI kiểm mode/model', () => {
-  assert.deepStrictEqual(resolveSplit({}, { SBOK_SPLIT_MODE: 'ai', SBOK_LLM_MODEL: 'bad model;rm' }), { mode: '', model: 'qwen2.5:3b' });
+  assert.deepStrictEqual(resolveSplit({}, { SBOK_SPLIT_MODE: 'ai', SBOK_LLM_MODEL: 'bad model;rm' }),
+    { mode: '', model: 'qwen2.5:3b', source: 'default' });
   assert.deepStrictEqual(resolveSplit({ split: { mode: 'xyz' } }, { SBOK_SPLIT_MODE: 'llm' }).mode, 'llm');
   assert.deepStrictEqual(validateSplit({ mode: '', model: '' }), { ok: true, value: { mode: '', model: 'qwen2.5:3b' } });
   assert.deepStrictEqual(validateSplit({ mode: 'llm', model: ' qwen2.5:7b ' }), { ok: true, value: { mode: 'llm', model: 'qwen2.5:7b' } });
@@ -124,6 +126,31 @@ test('TC-22: thiếu Ollama → tải, giải nén, chạy serve; thiếu model 
   assert.ok(calls.run.some((c) => c.startsWith('tar -xf') && c.includes('ollama')));
   assert.deepStrictEqual(ol.calls, ['isReady', 'serve', 'waitReady', 'pull qwen2.5:3b', 'isReady']);
   assert.ok(steps.every((p) => p.steps === 7));
+});
+
+test('TC-38: ensureRuntime mode llm → log từng bước Ollama (kiểm, tải mốc %, giải nén, serve, pull mốc %) kèm ms; '
+  + 'bước lỗi có mã', async () => {
+  const ol = fakeOllama([{ running: false, hasModel: false }, { running: true, hasModel: true }]);
+  ol.pull = async (model, { onProgress }) => { ol.calls.push(`pull ${model}`); [0, 55, 100].forEach((c) => onProgress(c, 100)); };
+  const { deps } = runtimeDeps(ol);
+  deps.download = async (item, dest, _x, cb) => { [0, 25, 100].forEach((r) => cb(r, 100)); return dest; };
+  const logs = [];
+  await ensureRuntime({ dataDir: tmpData(), log: (l) => logs.push(l), deps, split: { mode: 'llm', model: 'qwen2.5:3b' } });
+  for (const name of ['Python/VieNeu-TTS', 'ffmpeg', 'Ollama: kiểm', 'Ollama: tải', 'Ollama: giải nén', 'Ollama: serve',
+    'Ollama: pull qwen2.5:3b']) {
+    assert.ok(logs.includes(`[setup] [${name}] bắt đầu`), `${name}\n${logs.join('\n')}`);
+    assert.ok(logs.some((l) => l.startsWith(`[setup] [${name}] xong (`) && /\(\d+ ms/.test(l)), `${name}\n${logs.join('\n')}`);
+  }
+  assert.deepStrictEqual(logs.filter((l) => l.startsWith('[setup] [Ollama: tải] ') && l.endsWith('%')),
+    ['[setup] [Ollama: tải] 0%', '[setup] [Ollama: tải] 20%', '[setup] [Ollama: tải] 100%']);
+  assert.deepStrictEqual(logs.filter((l) => l.startsWith('[setup] [Ollama: pull qwen2.5:3b] ') && l.endsWith('%')),
+    ['[setup] [Ollama: pull qwen2.5:3b] 0%', '[setup] [Ollama: pull qwen2.5:3b] 50%', '[setup] [Ollama: pull qwen2.5:3b] 100%']);
+
+  const bad = fakeOllama([{ running: true, hasModel: false }]);
+  bad.pull = async () => { throw Object.assign(new Error('pull lỗi'), { code: 'ECONNRESET' }); };
+  const badLogs = [];
+  await ensureRuntime({ dataDir: tmpData(), log: (l) => badLogs.push(l), deps: runtimeDeps(bad).deps, split: { mode: 'llm', model: 'm' } });
+  assert.ok(badLogs.some((l) => /^\[setup\] \[Ollama: pull m\] lỗi \(\d+ ms\): pull lỗi \(ECONNRESET\)$/.test(l)), badLogs.join('\n'));
 });
 
 test('TC-23: pull lỗi → mode llm báo lỗi môi trường; chưa chọn → không chặn (dùng heuristic); heuristic không kiểm', async () => {

@@ -173,8 +173,20 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
   // Tiến độ cho UI: bước step/STEPS; received/total byte khi tải file, total = 0 là chưa biết (thanh chạy vô định)
   const STEPS = withLlm ? 7 : 5;
   const progress = (step, label, received = 0, total = 0) => onProgress({ step, steps: STEPS, label, received, total });
-  const dl = (step, item, dest) =>
-    dlRaw(item, dest, undefined, (received, total) => progress(step, `Tải ${item.name}`, received, total));
+  const dl = (step, item, dest, onBytes = () => {}) =>
+    dlRaw(item, dest, undefined, (received, total) => {
+      progress(step, `Tải ${item.name}`, received, total);
+      onBytes(received, total);
+    });
+  // AC-14: log từng bước kiểm môi trường (cùng mẫu chữ với pipeline#step)
+  const step = (name) => {
+    const t0 = Date.now();
+    log(`[setup] [${name}] bắt đầu`);
+    return {
+      done: (x) => log(`[setup] [${name}] xong (${Date.now() - t0} ms${x ? `, ${x}` : ''})`),
+      fail: (e) => log(`[setup] [${name}] lỗi (${Date.now() - t0} ms): ${e.message}${e.code ? ` (${e.code})` : ''}`),
+    };
+  };
   const reqFile = deps.requirementsFile || REQUIREMENTS;
   const rt = path.join(dataDir, 'runtime');
   const env = runtimeEnv(dataDir);
@@ -183,6 +195,7 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
 
   const pyDir = path.join(rt, 'python');
   const runtimePy = path.join(pyDir, 'python.exe');
+  const sPy = step('Python/VieNeu-TTS');
   let pythonPath = await firstWorking([runtimePy], (p) => ok(p, ['-c', TTS_IMPORT]));
   if (!pythonPath) {
     try {
@@ -208,12 +221,15 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
       if (!(await ok(runtimePy, ['-c', TTS_IMPORT]))) throw new Error('đã cài nhưng không import được VieNeu-TTS');
       pythonPath = runtimePy;
     } catch (err) {
+      sPy.fail(err);
       errors.push(`Python/VieNeu-TTS: ${err.message}`);
     }
   }
+  if (pythonPath) sPy.done('sẵn sàng');
 
   const ffDir = path.join(rt, 'ffmpeg');
   const runtimeFf = path.join(ffDir, 'bin', 'ffmpeg.exe');
+  const sFf = step('ffmpeg');
   let ffmpegPath = await firstWorking([runtimeFf], (p) => ok(p, ['-version']));
   if (!ffmpegPath) {
     try {
@@ -225,12 +241,15 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
       if (!(await ok(runtimeFf, ['-version']))) throw new Error('đã giải nén nhưng ffmpeg không chạy');
       ffmpegPath = runtimeFf;
     } catch (err) {
+      sFf.fail(err);
       errors.push(`ffmpeg: ${err.message}`);
     }
   }
+  if (ffmpegPath) sFf.done('sẵn sàng');
 
   // #129: model tải sẵn vào {dataDir}/runtime/hf lúc cài, job không gọi HF Hub. Kiểm offline trước, thiếu mới tải.
   if (pythonPath) {
+    const sModel = step('Model VieNeu-TTS');
     try {
       const prefetch = [TTS_SCRIPT, '--prefetch'];
       if (!(await run(pythonPath, prefetch, { env: { ...env, HF_HUB_OFFLINE: '1' }, timeout: 0 })).ok) {
@@ -239,12 +258,14 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
         await must(run(pythonPath, prefetch, { env, timeout: 0 }), 'Tải model');
       }
       log('[setup] API/giọng VieNeu-TTS: ' + path.join(path.dirname(env.HF_HOME), 'vieneu-api.txt'));
+      sModel.done('sẵn sàng');
     } catch (err) {
+      sModel.fail(err);
       errors.push(`Model VieNeu-TTS: ${err.message}`);
     }
   }
 
-  const llm = withLlm ? await ensureOllama({ rt, env, split, log, progress, dl, run, ol: deps.ollama || ollama }) : null;
+  const llm = withLlm ? await ensureOllama({ rt, env, split, log, progress, dl, run, step, ol: deps.ollama || ollama }) : null;
   if (llm && !llm.ok) {
     // Đã chọn llm: chặn nhận job (job nào cũng sẽ lỗi). Chưa chọn: dùng logic hiện tại, chỉ báo ở dòng kiểm tra.
     if (split.mode === 'llm') errors.push(`Ollama/LLM: ${llm.detail}`);
@@ -255,34 +276,68 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
 }
 
 /** FEAT-007 (BR-4): Ollama trong {dataDir}/runtime/ollama, model trong runtime/ollama-models. Đã có thì bỏ qua. */
-async function ensureOllama({ rt, env, split, log, progress, dl, run, ol }) {
+async function ensureOllama({ rt, env, split, log, progress, dl, run, step, ol }) {
   const dir = path.join(rt, 'ollama');
   const exe = path.join(dir, 'ollama.exe');
+  let cur;
+  const begin = (name) => (cur = step(name));
   try {
+    begin('Ollama: kiểm');
     let st = await ol.isReady(split.model);
+    cur.done(`running=${st.running}, hasModel=${st.hasModel}`);
     if (!st.running) {
       if (!fs.existsSync(exe)) {
         log('[setup] Đang cài Ollama vào ' + dir);
-        const zip = await dl(6, MANIFEST.ollama, path.join(rt, 'downloads', 'ollama.zip'));
+        begin('Ollama: tải');
+        const zip = await dl(6, MANIFEST.ollama, path.join(rt, 'downloads', 'ollama.zip'), tenPercent(log, 'Ollama: tải'));
+        cur.done();
+        begin('Ollama: giải nén');
         progress(6, 'Giải nén Ollama');
         fs.mkdirSync(dir, { recursive: true });
         await must(run('tar', ['-xf', zip, '-C', dir], { env, timeout: 0 }), 'Giải nén Ollama');
+        cur.done();
       }
+      begin('Ollama: serve');
       progress(6, 'Khởi động Ollama');
       ol.serve(exe, { ...env, OLLAMA_HOST: ollama.OLLAMA_HOST, OLLAMA_MODELS: path.join(rt, 'ollama-models') });
       st = await ol.waitReady(split.model);
       if (!st.running) throw new Error('Ollama không khởi động được');
+      cur.done();
     }
     if (!st.hasModel) {
       log(`[setup] Đang tải model ${split.model}`);
-      progress(7, `Tải model ${split.model} (chỉ lần đầu, có thể mất nhiều phút)`);
-      await ol.pull(split.model);
+      const name = `Ollama: pull ${split.model}`;
+      begin(name);
+      const label = `Tải model ${split.model} (chỉ lần đầu, có thể mất nhiều phút)`;
+      progress(7, label);
+      const pct = tenPercent(log, name);
+      await ol.pull(split.model, { onProgress: (c, t) => { progress(7, label, c, t); pct(c, t); } });
       if (!(await ol.isReady(split.model)).hasModel) throw new Error(`đã tải nhưng chưa thấy model ${split.model}`);
+      cur.done();
     }
     return { ok: true, detail: `Ollama + ${split.model}` };
   } catch (err) {
+    cur.fail(err);
     return { ok: false, detail: err.message };
   }
+}
+
+/** AC-14: log mốc 10% của một lần tải; tổng đổi (layer mới của pull) thì đếm lại. */
+function tenPercent(log, name) {
+  let last = -1;
+  let lastTotal = 0;
+  return (received, total) => {
+    if (!total) return;
+    if (total !== lastTotal) {
+      lastTotal = total;
+      last = -1;
+    }
+    const p = Math.min(100, Math.floor((received / total) * 10) * 10);
+    if (p > last) {
+      last = p;
+      log(`[setup] [${name}] ${p}%`);
+    }
+  };
 }
 
 module.exports = {

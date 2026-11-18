@@ -32,10 +32,12 @@ async function notifyChapterSplitFailed(config, payload, { log = console.log, fe
       log(`Task ${taskId}: báo admin lỗi HTTP ${res.status}`);
       return false;
     }
-    log(`Task ${taskId}: đã báo admin tách chương LLM lỗi`);
+    log(`Task ${taskId}: đã báo admin tách chương LLM lỗi (HTTP ${res.status})`);
     return true;
   } catch (err) {
-    log(`Task ${taskId}: báo admin lỗi (${err.message})`);
+    // BR-14: "fetch failed" không đủ để tìm lỗi → kèm mã gốc (ECONNREFUSED, UND_ERR_CONNECT_TIMEOUT…)
+    const code = err.code || (err.cause && err.cause.code);
+    log(`Task ${taskId}: báo admin lỗi (${err.message}${code ? ` ${code}` : ''})`);
     return false;
   }
 }

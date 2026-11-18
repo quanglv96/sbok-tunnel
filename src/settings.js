@@ -33,13 +33,14 @@ const validModel = (v) => trimmed(v).length > 0 && trimmed(v).length <= 100 && M
 
 /**
  * FEAT-007 (BR-1, AC-4): settings.json mục `split` (UI) → env (`SBOK_SPLIT_MODE`, `SBOK_LLM_MODEL`) → mặc định.
- * Giá trị lạ hoặc rỗng = chưa chọn ở nguồn đó.
+ * Giá trị lạ hoặc rỗng = chưa chọn ở nguồn đó. `source` = nguồn của mode (`ui`/`env`/`default`) để log (AC-14).
  */
 function resolveSplit(settings, env = process.env) {
   const ui = (settings && settings.split) || {};
-  const mode = [ui.mode, env.SBOK_SPLIT_MODE].find(validMode);
+  const modeIdx = [ui.mode, env.SBOK_SPLIT_MODE].findIndex(validMode);
+  const mode = modeIdx < 0 ? '' : trimmed([ui.mode, env.SBOK_SPLIT_MODE][modeIdx]).toLowerCase();
   const model = [ui.model, env.SBOK_LLM_MODEL].find(validModel);
-  return { mode: mode ? trimmed(mode).toLowerCase() : '', model: model ? trimmed(model) : DEFAULT_LLM_MODEL };
+  return { mode, model: model ? trimmed(model) : DEFAULT_LLM_MODEL, source: ['ui', 'env'][modeIdx] || 'default' };
 }
 
 /** Kiểm giá trị UI gửi lên (renderer không được tin). Model rỗng = mặc định. */

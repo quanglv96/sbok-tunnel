@@ -1,6 +1,6 @@
 'use strict';
 
-const { chat } = require('../ollama');
+const { NUM_CTX, chat } = require('../ollama');
 
 // Phần đầu mỗi trang gửi cho LLM: tổng ~30k ký tự cho vừa ngữ cảnh model 3b; sách dài thì mỗi trang ít ký tự hơn
 const MAX_PROMPT_CHARS = 30_000;
@@ -62,19 +62,26 @@ function cutByPages(pages, chapters) {
     .map((p, i) => ({ index: i + 1, ...p }));
 }
 
-/** Tách chương bằng LLM. Mọi lỗi (gọi Ollama, kết quả sai) ném `LlmSplitError`. */
+/**
+ * Tách chương bằng LLM. Mọi lỗi (gọi Ollama, kết quả sai) ném `LlmSplitError` (message kèm mã lỗi gốc nếu có).
+ * Trả { chapters, stats } (stats để log, không chứa text trang/prompt).
+ */
 async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
   if (!Array.isArray(pages) || pages.length === 0) throw new LlmSplitError('Không có text trang để tách');
-  let content;
+  const prompt = buildPrompt(pages);
+  let res;
   try {
-    content = await chatFn(model, [
+    res = await chatFn(model, [
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: buildPrompt(pages) },
+      { role: 'user', content: prompt },
     ], timeoutMs ? { timeoutMs } : {});
   } catch (err) {
-    throw new LlmSplitError(`Gọi Ollama lỗi: ${err.message}`);
+    const msg = String((err && err.message) || err);
+    const code = err && (err.code || (err.cause && err.cause.code));
+    throw new LlmSplitError(`Gọi Ollama lỗi: ${msg}${code && !msg.includes(code) ? ` (${code})` : ''}`);
   }
-  return cutByPages(pages, parseChapters(content, pages.length));
+  const chapters = cutByPages(pages, parseChapters(res && res.content, pages.length));
+  return { chapters, stats: { ...(res && res.stats), pages: pages.length, promptChars: prompt.length, numCtx: NUM_CTX } };
 }
 
 module.exports = { LlmSplitError, buildPrompt, cutByPages, parseChapters, splitWithLlm };

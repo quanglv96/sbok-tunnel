@@ -14,13 +14,16 @@ const { LlmSplitError } = require('../src/extract/llmSplitter');
 const THREE = [1, 2, 3].map((n) => `Chương ${n}\n${'Nội dung chương. '.repeat(20)}`).join('\n');
 const PAGES = ['Trang một nội dung.', 'Trang hai nội dung.', 'Trang ba nội dung.', 'Trang bốn nội dung.'];
 
-function setup({ mode = 'llm', splitResults = [], extract, ollama = { running: true, hasModel: true } } = {}) {
+const STATS = { prompt_eval_count: 812, eval_count: 37, firstByteMs: 321000, totalMs: 330000, pages: 4, promptChars: 90,
+  numCtx: 16384 };
+
+function setup({ mode = 'llm', source = 'ui', splitResults = [], extract, ollama = { running: true, hasModel: true } } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbok-llm-'));
   const pdfPath = path.join(dir, 'a.pdf');
   fs.writeFileSync(pdfPath, '%PDF-1.7');
   const config = { jobsDir: path.join(dir, 'jobs'), cacheDir: path.join(dir, 'cache') };
   const out = { progress: [], chapterDone: [], completed: 0, failed: null, splitCalls: [], admin: [], scheduled: [],
-    readyCalls: 0, ttsItems: [] };
+    readyCalls: 0, ttsItems: [], logs: [] };
   const backend = {
     progress: async (id, stage, detail) => { out.progress.push(`${stage}|${detail ?? ''}`); },
     chapterDone: async (id, title, author, ch) => { out.chapterDone.push(ch.index); return true; },
@@ -35,8 +38,9 @@ function setup({ mode = 'llm', splitResults = [], extract, ollama = { running: t
     splitWithLlm: async (pages, opts) => {
       out.splitCalls.push({ pages, opts });
       const r = results.shift();
+      if (typeof r === 'function') return r(pages, opts);
       if (r instanceof Error) throw r;
-      return r;
+      return { chapters: r, stats: STATS };
     },
     synthesizeBatch: async (cfg, items, log, onDone) => {
       out.ttsItems.push(items.length);
@@ -46,7 +50,7 @@ function setup({ mode = 'llm', splitResults = [], extract, ollama = { running: t
     ollamaReady: async () => { out.readyCalls++; return ollama; },
   };
   const ctx = {
-    config, backend, deps, log: () => {}, split: { mode, model: 'qwen2.5:3b' },
+    config, backend, deps, log: (l) => out.logs.push(l), split: { mode, model: 'qwen2.5:3b', source },
     scheduleRetry: (s) => out.scheduled.push({ ...s }),
   };
   const job = { taskId: 't1', pdfPath, fileName: 'a.pdf' };
@@ -145,6 +149,68 @@ test('TC-17: chưa chọn mode, Ollama chạy + có model → llm', async () => 
   assert.strictEqual(out.readyCalls, 1);
   assert.strictEqual(out.splitCalls.length, 1);
   assert.deepStrictEqual(out.chapterDone, [1, 2]);
+});
+
+test('TC-32: Ollama cổng đóng → log hẹn thử lại chứa mã ECONNREFUSED', async () => {
+  const { splitWithLlm } = require('../src/extract/llmSplitter');
+  const refused = Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' });
+  const real = (pages, opts) => splitWithLlm(pages, { ...opts, chatFn: async () => { throw refused; } });
+  const { out, ctx, job } = setup({ splitResults: [real] });
+  await processJob(job, ctx);
+  assert.ok(out.logs.some((l) => /thử lại lần 1\/3/.test(l) && l.includes('ECONNREFUSED')), out.logs.join('\n'));
+  assert.ok(out.logs.some((l) => /\[tách chương LLM .*\] lỗi \(\d+ ms\): .*ECONNREFUSED/.test(l)));
+});
+
+/** Mỗi tên bước có dòng bắt đầu và dòng xong kèm ms (AC-14). */
+function assertStep(logs, name, extraRe) {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  assert.ok(logs.some((l) => new RegExp(`\\[${esc}[^\\]]*\\] bắt đầu`).test(l)), `thiếu bắt đầu: ${name}\n${logs.join('\n')}`);
+  const done = logs.find((l) => new RegExp(`\\[${esc}[^\\]]*\\] xong \\(\\d+ ms`).test(l));
+  assert.ok(done, `thiếu xong: ${name}\n${logs.join('\n')}`);
+  if (extraRe) assert.match(done, extraRe);
+}
+
+test('TC-35: job heuristic → log bắt đầu/xong + ms từng bước, mỗi chương TTS, báo chương', async () => {
+  const { out, ctx, job } = setup({ mode: 'heuristic', source: 'env' });
+  await processJob(job, ctx);
+  assertStep(out.logs, 'kiểm tra an toàn', /qua/);
+  assertStep(out.logs, 'trích chữ', /4 trang, \d+ ký tự/);
+  assert.ok(out.logs.some((l) => /\[chọn chế độ\] xong \(\d+ ms, heuristic, nguồn env\)/.test(l)));
+  assertStep(out.logs, 'tách chương heuristic', /3 chương/);
+  assertStep(out.logs, 'ghi txt + job.json', /3 chương, \d+ ký tự/);
+  for (const i of [1, 2, 3]) {
+    assert.ok(out.logs.some((l) => new RegExp(`\\[TTS chương ${i}/3\\] xong \\(\\d+ ms, \\d+ ký tự\\)`).test(l)), out.logs.join('\n'));
+    assert.ok(out.logs.some((l) => new RegExp(`\\[báo chương ${i}\\] xong \\(\\d+ ms, nhận\\)`).test(l)));
+  }
+  assertStep(out.logs, 'báo hoàn tất');
+});
+
+test('TC-36: job llm → log chế độ + nguồn, model, số trang, promptChars, numCtx, firstByteMs, totalMs, eval count, số chương',
+  async () => {
+    const { out, ctx, job } = setup({ splitResults: [LLM_OK], source: 'ui' });
+    await processJob(job, ctx);
+    assert.ok(out.logs.some((l) => /\[chọn chế độ\] xong \(\d+ ms, llm, nguồn ui\)/.test(l)));
+    assertStep(out.logs, 'tách chương LLM qwen2.5:3b, lần đầu', new RegExp('4 trang, promptChars 90, numCtx 16384, '
+      + 'firstByteMs 321000, totalMs 330000, prompt_eval_count 812, eval_count 37, 2 chương'));
+
+    const auto = setup({ mode: '', splitResults: [LLM_OK] });
+    await processJob(auto.job, auto.ctx);
+    assert.ok(auto.out.logs.some((l) => /\[chọn chế độ\] xong \(\d+ ms, llm, tự động: running=true, hasModel=true\)/.test(l)));
+  });
+
+test('TC-37: không dòng log nào chứa text trang hay API key', async () => {
+  const SECRET = 'NOI-DUNG-BI-MAT-xyz';
+  const KEY = 'api-key-khong-duoc-log';
+  for (const mode of ['llm', 'heuristic']) {
+    const pages = [`Chương 1 ${SECRET}`, 'Trang hai', 'Chương 2 nữa', 'Trang bốn'];
+    const { out, ctx, job } = setup({ mode, splitResults: [new LlmSplitError('JSON hỏng')],
+      extract: async () => ({ text: pages.join('\n'), pages, title: 'Sách', author: null }) });
+    ctx.config.adminApiKey = KEY;
+    ctx.config.adminAlertUrl = 'https://admin.example';
+    await processJob(job, ctx);
+    assert.ok(out.logs.length > 3);
+    assert.ok(out.logs.every((l) => !l.includes(SECRET) && !l.includes(KEY)), out.logs.join('\n'));
+  }
 });
 
 test('TC-18: chưa chọn mode, Ollama không chạy hoặc thiếu model → heuristic', async () => {
