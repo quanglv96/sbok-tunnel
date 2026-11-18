@@ -5,7 +5,9 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; media-src data:" />
   <title>SBOK Worker</title>
   <style>
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 16px; }
+    html, body { height: 100%; }
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 16px;
+      box-sizing: border-box; display: flex; flex-direction: column; }
     h2 { margin: 0 0 12px; } h3 { margin: 0 0 8px; font-size: 15px; }
     .ok { color: #34d399; } .bad { color: #f87171; } .warn { color: #fbbf24; } .muted { color: #94a3b8; font-size: 12px; }
     .card { background: #1e293b; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
@@ -17,7 +19,11 @@
     button:disabled { opacity: .5; cursor: default; }
     .field { margin-bottom: 8px; } .err { color: #f87171; font-size: 12px; min-height: 14px; }
     .tabs { display: flex; gap: 4px; margin-bottom: 12px; } .tab.active { background: #2563eb; }
-    pre { background: #020617; padding: 8px; height: 260px; overflow: auto; font-size: 12px; margin: 0; }
+    /* LOGIC-01: ô Log giãn theo chiều cao cửa sổ (bỏ 260px cố định) */
+    #tab-activity:not([hidden]) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #tab-config:not([hidden]) { flex: 1; min-height: 0; overflow: auto; }
+    .log-card { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-bottom: 0; }
+    pre { background: #020617; padding: 8px; flex: 1; min-height: 120px; overflow: auto; font-size: 12px; margin: 0; }
   </style>
 </head>
 <body>
@@ -39,7 +45,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card log-card">
     <h3>Log</h3>
     <pre id="log"></pre>
   </div>
