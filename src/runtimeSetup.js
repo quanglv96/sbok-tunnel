@@ -184,7 +184,12 @@ async function ensureRuntime({ dataDir, log = console.log, onProgress = () => {}
     log(`[setup] [${name}] bắt đầu`);
     return {
       done: (x) => log(`[setup] [${name}] xong (${Date.now() - t0} ms${x ? `, ${x}` : ''})`),
-      fail: (e) => log(`[setup] [${name}] lỗi (${Date.now() - t0} ms): ${e.message}${e.code ? ` (${e.code})` : ''}`),
+      // BR-14: fetch lỗi ("fetch failed") để mã gốc ở e.cause.code
+      fail: (e) => {
+        const msg = String((e && e.message) || e);
+        const code = e && (e.code || (e.cause && e.cause.code));
+        log(`[setup] [${name}] lỗi (${Date.now() - t0} ms): ${msg}${code && !msg.includes(code) ? ` (${code})` : ''}`);
+      },
     };
   };
   const reqFile = deps.requirementsFile || REQUIREMENTS;

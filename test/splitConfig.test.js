@@ -153,6 +153,14 @@ test('TC-38: ensureRuntime mode llm → log từng bước Ollama (kiểm, tải
   assert.ok(badLogs.some((l) => /^\[setup\] \[Ollama: pull m\] lỗi \(\d+ ms\): pull lỗi \(ECONNRESET\)$/.test(l)), badLogs.join('\n'));
 });
 
+test('TC-40: pull (fetch) lỗi "fetch failed" → log bước kèm mã gốc err.cause.code', async () => {
+  const ol = fakeOllama([{ running: true, hasModel: false }]);
+  ol.pull = async () => { throw new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } }); };
+  const logs = [];
+  await ensureRuntime({ dataDir: tmpData(), log: (l) => logs.push(l), deps: runtimeDeps(ol).deps, split: { mode: 'llm', model: 'm' } });
+  assert.ok(logs.some((l) => /^\[setup\] \[Ollama: pull m\] lỗi \(\d+ ms\): fetch failed \(ECONNREFUSED\)$/.test(l)), logs.join('\n'));
+});
+
 test('TC-23: pull lỗi → mode llm báo lỗi môi trường; chưa chọn → không chặn (dùng heuristic); heuristic không kiểm', async () => {
   const llm = runtimeDeps(fakeOllama([{ running: true, hasModel: false }], { pullFails: true }));
   const a = await ensureRuntime({ dataDir: tmpData(), log: () => {}, deps: llm.deps, split: { mode: 'llm', model: 'm' } });
