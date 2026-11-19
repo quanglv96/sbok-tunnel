@@ -37,6 +37,7 @@ test('TC-69b: chạy tốt ngay lần đầu → chỉ 1 lần gọi với NUM_C
   const r = await splitWithLlm(PAGES, { model: 'qwen2.5:3b', chatFn: fn });
   assert.deepStrictEqual(calls.map((c) => c.numCtx), [NUM_CTX]);
   assert.strictEqual(r.stats.numCtx, NUM_CTX);
+  assert.strictEqual(r.stats.ctxTried, undefined);
 });
 
 test('TC-69c: runner chết ở mọi mức ngữ cảnh → LlmSplitError ghi các mức đã thử (đi luồng thử lại)', async () => {

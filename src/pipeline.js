@@ -258,7 +258,7 @@ async function runLlmSplit(s, ctx) {
       const r = await (deps.splitWithLlm || splitWithLlm)(pages, { model: s.model });
       chapters = r.chapters;
       const x = r.stats || {};
-      st.done(`${x.pages} trang, headingPages ${x.headingPages}, tocEntries ${x.tocEntries}, tocAdded ${x.tocAdded}, promptChars ${x.promptChars}, numCtx ${x.numCtx} (đã thử ${x.ctxTried}), firstByteMs ${x.firstByteMs}, `
+      st.done(`${x.pages} trang, headingPages ${x.headingPages}, tocEntries ${x.tocEntries}, tocAdded ${x.tocAdded}, promptChars ${x.promptChars}, numCtx ${x.numCtx}${x.ctxTried ? ` (đã thử ${x.ctxTried})` : ''}, firstByteMs ${x.firstByteMs}, `
         + `totalMs ${x.totalMs}, prompt_eval_count ${x.prompt_eval_count}, eval_count ${x.eval_count}, ${chapters.length} chương`);
     } catch (err) {
       st.fail(err);

@@ -268,7 +268,7 @@ async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
     chapters,
     stats: {
       ...(res && res.stats), pages: pages.length, headingPages, tocEntries: toc.tocCount, tocAdded: toc.added,
-      promptChars: prompt.length, numCtx, ctxTried: tried.join('/'),
+      promptChars: prompt.length, numCtx, ...(tried.length > 1 ? { ctxTried: tried.join('/') } : {}),
     },
   };
 }
