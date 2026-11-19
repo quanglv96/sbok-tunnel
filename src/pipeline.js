@@ -68,11 +68,16 @@ function progressText(label, chapterRatio, doneChars, totalChars) {
  * "Toàn bộ" (không tách được chương) chỉ đọc tên sách.
  */
 function spokenText(bookTitle, ch) {
-  if (ch.title === 'Giới thiệu') return ch.text;
+  const text = stripFootnotes(ch.text);
+  if (ch.title === 'Giới thiệu') return text;
   const sentence = (s) => `${s.trim().replace(/[\s.:;,\-–—]+$/, '')}.`;
   const head = ch.title === 'Toàn bộ' ? sentence(bookTitle) : `${sentence(bookTitle)} ${sentence(ch.title)}`;
-  return `${head}\n${ch.text}`;
+  return `${head}\n${text}`;
 }
+
+/** PMO #83: dấu chú thích "[12]", "[3, 4]", "[5-7]" (số ≤ 3 chữ số, không đụng năm "[2001]") không đọc ra. */
+const FOOTNOTE = /[ \t]*\[\d{1,3}(?:\s*[,–-]\s*\d{1,3})*\]/g;
+const stripFootnotes = (text) => text.replace(FOOTNOTE, '');
 
 /**
  * BR-20: tên file chương (không đuôi) `003 - Tiêu đề`: bỏ ký tự cấm Windows và ký tự điều khiển, gộp khoảng trắng,
