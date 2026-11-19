@@ -145,6 +145,40 @@ test('TC-51: > 30 trang trả 1 chương → LlmSplitError (kể cả khi sẽ t
   assert.throws(() => parseChapters(one(5), 338), LlmSplitError);
 });
 
+// Hồi quy job 6c04ab18 ("Từ tốt đến vĩ đại"): LLM gán CHƯƠNG MỘT vào trang GIỚI THIỆU, CHƯƠNG HAI vào trang CHƯƠNG MỘT…
+test('TC-53: LLM trả start_page lệch 1 mục + title dính " | …" → dời về trang có tiêu đề, bỏ phần sau " | "', async () => {
+  const pages = [
+    'TỪ TỐT ĐẾN VĨ ĐẠI\nMỤC LỤC\nGIỚI THIỆU\nLỜI NÓI ĐẦU\nCHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI\nCHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO CẤP ĐỘ 5',
+    'GIỚI THIỆU\nChúng ta thường quen nghĩ rằng.',
+    'tiếp giới thiệu\nLỜI NÓI ĐẦU\nKhi tôi đang gần kết thúc bản thảo này.',
+    'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA\nVĨ ĐẠI\nĐiều làm cho cái chết khó khăn\n. – BERYL MARKHAM\nTốt là kẻ thù của Vĩ Đại.',
+    'thân chương một',
+    'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO\nCẤP ĐỘ 5\nthân chương hai',
+    'tiếp chương hai',
+  ];
+  const chapters = await split({ chapters: [
+    { title: 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI | . – BERYL MARKHAM', start_page: 2 },
+    { title: 'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO CẤP ĐỘ 5', start_page: 4 },
+  ] }, pages);
+  assert.deepStrictEqual(chapters.map((c) => c.title),
+    ['Giới thiệu', 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI', 'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO CẤP ĐỘ 5']);
+  assert.strictEqual(chapters[0].text, pages.slice(0, 3).join('\n'));
+  assert.strictEqual(chapters[1].text, pages.slice(3, 5).join('\n'));
+  assert.strictEqual(chapters[2].text, pages.slice(5).join('\n'));
+});
+
+test('TC-54: không tìm thấy tiêu đề → giữ trang LLM; dời làm mất thứ tự → gộp vào chương trước; trang mục lục không tính', async () => {
+  const pages = ['MỤC LỤC\nCHƯƠNG 2: B', 'p2', 'p3', 'p4', 'CHƯƠNG 2: B\nthân', 'p6'];
+  const chapters = await split({ chapters: [
+    { title: 'A | x', start_page: 2 }, { title: 'Chương 2: B', start_page: 3 }, { title: 'C', start_page: 4 },
+  ] }, pages);
+  assert.deepStrictEqual(chapters.map((c) => [c.title, c.text]), [
+    ['Giới thiệu', pages[0]],
+    ['A', pages.slice(1, 4).join('\n')],
+    ['Chương 2: B', pages.slice(4).join('\n')],
+  ]);
+});
+
 const fakeRes = (status, body) => ({ ok: status < 300, status, text: async () => body, json: async () => JSON.parse(body) });
 
 test('ollama.isReady / pull: có model theo tên hoặc :latest; lỗi kết nối = không chạy; pull báo success', async () => {

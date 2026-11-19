@@ -110,6 +110,47 @@ function fullTitle(title, pageText) {
   return hit ? hit.slice(0, TITLE_MAX) : title;
 }
 
+const isTocPage = (text) => String(text || '').split('\n').some((l) => TOC_TITLE.test(norm(l)));
+// a bắt đầu bằng b và ký tự ngay sau không phải chữ/số ("chương 1" không khớp "chương 10")
+const startsAt = (a, b) => a.startsWith(b) && !/[\p{L}\d]/u.test(a[b.length] || '');
+
+/** Trang có dòng tiêu đề khớp title (tiêu đề đầy đủ bắt đầu bằng title, hoặc title bắt đầu bằng dòng CHƯƠNG/PHẦN… của trang). */
+function titleOnPage(title, pageText) {
+  const t = norm(title);
+  return headingLines(pageText).some((h) => {
+    const n = norm(h);
+    return startsAt(n, t) || (HEADING_KEYWORD.test(h) && startsAt(t, n));
+  });
+}
+
+/**
+ * LLM hay gán start_page lệch (chương lấy trang của mục trước, ví dụ CHƯƠNG MỘT nhận trang GIỚI THIỆU) và chép cả
+ * " | " của prompt vào title. Bỏ phần sau " | "; chương mà trang LLM chỉ ra không có dòng tiêu đề khớp thì dời về
+ * trang đầu tiên sau chương trước có dòng tiêu đề khớp (bỏ trang mục lục); không tìm thấy thì giữ trang LLM.
+ * Chương đầu ở trang 1 giữ nguyên; chương không còn tăng dần sau khi dời bị gộp vào chương trước.
+ */
+function alignToHeadings(chapters, pages) {
+  const out = [];
+  let prev = 0;
+  for (const c of chapters) {
+    const title = c.title.split(' | ')[0].trim() || c.title;
+    const at = (p) => !isTocPage(pages[p - 1]) && titleOnPage(title, pages[p - 1]);
+    let page = c.startPage;
+    if (!(page === 1 && out.length === 0) && !at(page)) {
+      for (let p = prev + 1; p <= pages.length; p++) {
+        if (at(p)) {
+          page = p;
+          break;
+        }
+      }
+    }
+    if (page <= prev) continue;
+    out.push({ title, startPage: page });
+    prev = page;
+  }
+  return out;
+}
+
 /**
  * BR-17: theo thứ tự trang, `[Trang N] ` + dòng tiêu đề (nối " | "); trang mục lục gửi nguyên các dòng;
  * trang không có tiêu đề bỏ qua; dừng khi vượt MAX_PROMPT_CHARS (không cắt giữa khối). Không khối nào → cách cũ.
@@ -158,7 +199,7 @@ async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
     const code = err && (err.code || (err.cause && err.cause.code));
     throw new LlmSplitError(`Gọi Ollama lỗi: ${msg}${code && !msg.includes(code) ? ` (${code})` : ''}`);
   }
-  const parsed = parseChapters(res && res.content, pages.length)
+  const parsed = alignToHeadings(parseChapters(res && res.content, pages.length), pages)
     .map((c) => ({ ...c, title: fullTitle(c.title, pages[c.startPage - 1]) }));
   const chapters = cutByPages(pages, parsed);
   return { chapters, stats: { ...(res && res.stats), pages: pages.length, headingPages, promptChars: prompt.length, numCtx: NUM_CTX } };
