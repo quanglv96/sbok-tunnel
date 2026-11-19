@@ -36,6 +36,7 @@ test('TC-69b: chạy tốt ngay lần đầu → chỉ 1 lần gọi với NUM_C
   const { fn, calls } = fakeChat(0);
   const r = await splitWithLlm(PAGES, { model: 'qwen2.5:3b', chatFn: fn });
   assert.deepStrictEqual(calls.map((c) => c.numCtx), [NUM_CTX]);
+  assert.ok(calls[0].promptChars <= 30_000);
   assert.strictEqual(r.stats.numCtx, NUM_CTX);
   assert.strictEqual(r.stats.ctxTried, undefined);
 });
@@ -45,13 +46,30 @@ test('TC-69c: runner chết ở mọi mức ngữ cảnh → LlmSplitError ghi c
   await assert.rejects(splitWithLlm(PAGES, { model: 'qwen2.5:3b', chatFn: fn }),
     (err) => err instanceof LlmSplitError && /exit status 2/.test(err.message) && err.message.includes(`${NUM_CTX}/8192/4096`));
   assert.strictEqual(calls.length, 3);
+  assert.deepStrictEqual(calls.map((c) => c.numCtx), [NUM_CTX, 8192, 4096]);
+  assert.ok(calls[2].promptChars <= 7500);
 });
 
-test('TC-69d: lỗi khác (ECONNREFUSED) → không lùi ngữ cảnh, ném luôn', async () => {
-  const { fn, calls } = fakeChat(99, 'connect ECONNREFUSED 127.0.0.1:11434');
-  await assert.rejects(splitWithLlm(PAGES, { model: 'qwen2.5:3b', chatFn: fn }), LlmSplitError);
-  assert.strictEqual(calls.length, 1);
-});
+for (const msg of ['connect ECONNREFUSED 127.0.0.1:11434', 'Ollama timeout sau 600000 ms',
+  'Ollama HTTP 500 {"error":"model not found"}']) {
+  test(`TC-69d: lỗi khác (${msg}) → không lùi ngữ cảnh, ném luôn, không ghi "[đã thử"`, async () => {
+    const { fn, calls } = fakeChat(99, msg);
+    await assert.rejects(splitWithLlm(PAGES, { model: 'qwen2.5:3b', chatFn: fn }),
+      (err) => err instanceof LlmSplitError && !err.message.includes('[đã thử'));
+    assert.strictEqual(calls.length, 1);
+  });
+}
+
+for (const msg of ['Ollama HTTP 500 {"error":"Out Of Memory"}', 'Ollama HTTP 500 {"error":"UNABLE TO ALLOCATE CUDA buffer"}',
+  'Ollama HTTP 500 {"error":"Failed To Allocate KV cache"}', 'Ollama HTTP 500 {"error":"Bad Allocation"}',
+  'Ollama HTTP 500 {"error":"LLAMA RUNNER PROCESS HAS TERMINATED: exit status 2"}']) {
+  test(`TC-69d: mẫu thiếu bộ nhớ (${msg}) không phân biệt hoa thường → có lùi ngữ cảnh`, async () => {
+    const { fn, calls } = fakeChat(1, msg);
+    const r = await splitWithLlm(PAGES, { model: 'qwen2.5:3b', chatFn: fn });
+    assert.ok(calls.length >= 2);
+    assert.strictEqual(r.stats.numCtx, 8192);
+  });
+}
 
 test('TC-69e: chat gửi options.num_ctx theo tham số numCtx', async () => {
   let body = '';

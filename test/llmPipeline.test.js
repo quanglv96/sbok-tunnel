@@ -63,6 +63,16 @@ function setup({ mode = 'llm', source = 'ui', splitResults = [], extract, ollama
 const LLM_OK = [{ index: 1, title: 'Phần 1', text: 'Trang một nội dung.\nTrang hai nội dung.' },
   { index: 2, title: 'Phần 2', text: 'Trang ba nội dung.\nTrang bốn nội dung.' }];
 
+test('TC-69e: log tách chương LLM có "(đã thử …)" chỉ khi đã lùi num_ctx', async () => {
+  const fallback = setup({ splitResults: [() => ({ chapters: LLM_OK, stats: { ...STATS, numCtx: 8192, ctxTried: '16384/8192' } })] });
+  await processJob(fallback.job, fallback.ctx);
+  assert.ok(fallback.out.logs.some((l) => l.includes('numCtx 8192 (đã thử 16384/8192)')));
+  const normal = setup({ splitResults: [LLM_OK] });
+  await processJob(normal.job, normal.ctx);
+  assert.ok(normal.out.logs.some((l) => l.includes('numCtx 16384')));
+  assert.ok(!normal.out.logs.some((l) => l.includes('(đã thử')));
+});
+
 test('TC-1: mode heuristic → splitChapters như cũ, không gọi Ollama/LLM', async () => {
   const { out, ctx, job } = setup({ mode: 'heuristic' });
   await processJob(job, ctx);
