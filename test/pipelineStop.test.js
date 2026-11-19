@@ -74,7 +74,13 @@ async function runCase(failOn) {
   return { dir, config, pdfPath, b, tts, scheduled, cancelled, logs };
 }
 
-const txt = (config, n) => path.join(config.jobsDir, 't9', `${n}.txt`);
+/** FEAT-007 BR-20: file chương `00n - Tiêu đề.ext` (không có thì đường dẫn `00n.ext`). */
+function chapterFile(dir, n, ext) {
+  const num = String(n).padStart(3, '0');
+  const hit = fs.existsSync(dir) && fs.readdirSync(dir).find((f) => f.startsWith(num) && f.endsWith(ext));
+  return path.join(dir, hit || `${num}${ext}`);
+}
+const txt = (config, n) => chapterFile(path.join(config.jobsDir, 't9'), n, '.txt');
 const jobJson = (config) => path.join(config.jobsDir, 't9', 'job.json');
 
 for (const status of [404, 401, 409]) {
@@ -104,8 +110,8 @@ for (const status of [404, 401, 409]) {
     assert.strictEqual(r.b.calls.filter((c) => c === 'chapterDone').length, 1);
     for (const c of ['complete', 'failed', 'progress:RETRYING']) assert.ok(!r.b.calls.includes(c), c);
     assert.strictEqual(r.scheduled.length, 0);
-    assert.ok(fs.existsSync(path.join(r.config.cacheDir, 't9', '1.mp3')), 'MP3 đã có giữ nguyên');
-    assert.ok(!fs.existsSync(path.join(r.config.cacheDir, 't9', '3.mp3')), 'không TTS tiếp');
+    assert.ok(fs.existsSync(chapterFile(path.join(r.config.cacheDir, 't9'), 1, '.mp3')), 'MP3 đã có giữ nguyên');
+    assert.ok(!fs.existsSync(chapterFile(path.join(r.config.cacheDir, 't9'), 3, '.mp3')), 'không TTS tiếp');
     assert.ok(fs.existsSync(txt(r.config, 2)));
     assert.ok(!fs.existsSync(jobJson(r.config)));
     fs.rmSync(r.dir, { recursive: true, force: true });
