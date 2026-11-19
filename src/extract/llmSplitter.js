@@ -16,10 +16,16 @@ const SYSTEM_PROMPT = [
   'Dựa vào mục lục (nếu có) và tiêu đề ở đầu trang, liệt kê các chương theo thứ tự.',
   'start_page là số N của trang (theo [Trang N]) nơi chương bắt đầu, không phải số trang in trong mục lục.',
   'Phần trước chương đầu tiên (bìa, lời nói đầu, mục lục) là chương "Giới thiệu" bắt đầu ở trang 1.',
+  'Chỉ liệt kê các trang có dòng tiêu đề; trang không liệt kê là thân bài.',
   'Chỉ trả JSON dạng {"chapters":[{"title":"...","start_page":1}]}.',
 ].join(' ');
 
-function buildPrompt(pages) {
+// BR-5 (PMO chốt #40): sách dài hơn ngưỡng này mà LLM trả đúng 1 chương = kết quả sai
+const MIN_PAGES_MULTI_CHAPTER = 30;
+const TOC_TITLE = /^(mục lục|contents|table of contents)$/i;
+
+/** Cách cũ: phần đầu mỗi trang (dùng khi không trang nào có dòng tiêu đề). */
+function legacyPrompt(pages) {
   const budget = Math.max(PAGE_HEAD_MIN, Math.min(PAGE_HEAD_MAX, Math.floor(MAX_PROMPT_CHARS / Math.max(pages.length, 1))));
   return pages.map((p, i) => `[Trang ${i + 1}] ${String(p || '').replace(/\s+/g, ' ').trim().slice(0, budget)}`).join('\n');
 }
@@ -36,7 +42,7 @@ function parseChapters(content, pageCount) {
   if (!list) throw new LlmSplitError('LLM trả JSON không có danh sách chương');
   if (list.length === 0) throw new LlmSplitError('LLM trả danh sách chương rỗng');
   let prev = 0;
-  return list.map((c, i) => {
+  const result = list.map((c, i) => {
     const title = c && typeof c.title === 'string' ? c.title.trim() : '';
     const raw = c && c.start_page;
     const page = typeof raw === 'number' || (typeof raw === 'string' && raw.trim()) ? Number(raw) : NaN;
@@ -48,6 +54,10 @@ function parseChapters(content, pageCount) {
     prev = page;
     return { title: title.slice(0, TITLE_MAX), startPage: page };
   });
+  if (pageCount > MIN_PAGES_MULTI_CHAPTER && result.length === 1) {
+    throw new LlmSplitError(`LLM trả 1 chương cho sách ${pageCount} trang`);
+  }
+  return result;
 }
 
 /** Cắt text theo trang; trang trước chương đầu gộp thành "Giới thiệu". Cùng dạng `splitChapters`: [{index,title,text}]. */
@@ -80,7 +90,7 @@ function headingLines(pageText) {
     if (!cur || cur.length > HEADING_LINE_MAX || !(HEADING_KEYWORD.test(cur) || isUpper(cur))) continue;
     while (i + 1 < lines.length) {
       const nx = lines[i + 1];
-      if (!nx || nx.length > HEADING_LINE_MAX || cur.length + nx.length >= TITLE_MAX) break;
+      if (!nx || nx.length > HEADING_LINE_MAX || cur.length + nx.length >= TITLE_MAX || HEADING_KEYWORD.test(nx)) break;
       if (!(openParens(cur) || /[:\-–]$/.test(cur) || (isUpper(cur) && isUpper(nx)))) break;
       cur = `${cur} ${nx}`;
       i++;
@@ -101,12 +111,42 @@ function fullTitle(title, pageText) {
 }
 
 /**
+ * BR-17: theo thứ tự trang, `[Trang N] ` + dòng tiêu đề (nối " | "); trang mục lục gửi nguyên các dòng;
+ * trang không có tiêu đề bỏ qua; dừng khi vượt MAX_PROMPT_CHARS (không cắt giữa khối). Không khối nào → cách cũ.
+ */
+function promptOf(pages) {
+  const blocks = [];
+  let total = 0;
+  for (let i = 0; i < pages.length; i++) {
+    const text = String(pages[i] || '');
+    const lines = text.split('\n').map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    let block;
+    if (lines.some((l) => TOC_TITLE.test(norm(l)))) {
+      block = `[Trang ${i + 1}]\n${lines.join('\n')}`;
+    } else {
+      const hs = headingLines(text);
+      if (hs.length === 0) continue;
+      block = `[Trang ${i + 1}] ${hs.join(' | ')}`;
+    }
+    const add = block.length + (blocks.length ? 1 : 0);
+    if (total + add > MAX_PROMPT_CHARS) break;
+    blocks.push(block);
+    total += add;
+  }
+  return blocks.length ? { prompt: blocks.join('\n'), headingPages: blocks.length } : { prompt: legacyPrompt(pages), headingPages: 0 };
+}
+
+function buildPrompt(pages) {
+  return promptOf(pages).prompt;
+}
+
+/**
  * Tách chương bằng LLM. Mọi lỗi (gọi Ollama, kết quả sai) ném `LlmSplitError` (message kèm mã lỗi gốc nếu có).
  * Trả { chapters, stats } (stats để log, không chứa text trang/prompt).
  */
 async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
   if (!Array.isArray(pages) || pages.length === 0) throw new LlmSplitError('Không có text trang để tách');
-  const prompt = buildPrompt(pages);
+  const { prompt, headingPages } = promptOf(pages);
   let res;
   try {
     res = await chatFn(model, [
@@ -121,7 +161,7 @@ async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
   const parsed = parseChapters(res && res.content, pages.length)
     .map((c) => ({ ...c, title: fullTitle(c.title, pages[c.startPage - 1]) }));
   const chapters = cutByPages(pages, parsed);
-  return { chapters, stats: { ...(res && res.stats), pages: pages.length, promptChars: prompt.length, numCtx: NUM_CTX } };
+  return { chapters, stats: { ...(res && res.stats), pages: pages.length, headingPages, promptChars: prompt.length, numCtx: NUM_CTX } };
 }
 
 module.exports = { LlmSplitError, buildPrompt, cutByPages, fullTitle, headingLines, parseChapters, splitWithLlm };

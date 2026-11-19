@@ -14,7 +14,7 @@ const { LlmSplitError } = require('../src/extract/llmSplitter');
 const THREE = [1, 2, 3].map((n) => `Chương ${n}\n${'Nội dung chương. '.repeat(20)}`).join('\n');
 const PAGES = ['Trang một nội dung.', 'Trang hai nội dung.', 'Trang ba nội dung.', 'Trang bốn nội dung.'];
 
-const STATS = { prompt_eval_count: 812, eval_count: 37, firstByteMs: 321000, totalMs: 330000, pages: 4, promptChars: 90,
+const STATS = { prompt_eval_count: 812, eval_count: 37, firstByteMs: 321000, totalMs: 330000, pages: 4, headingPages: 2, promptChars: 90,
   numCtx: 16384 };
 
 function setup({ mode = 'llm', source = 'ui', splitResults = [], extract, ollama = { running: true, hasModel: true } } = {}) {
@@ -131,6 +131,26 @@ test('TC-12: lỗi lần 1, lượt 2 thành công → chạy TTS, không báo a
   assert.strictEqual(readJob(config.jobsDir, 't1'), null);
 });
 
+test('TC-52: 40 trang, LLM trả 1 chương → hẹn thử lại 1 phút; lượt 3 vẫn 1 chương → failed + báo admin 1 lần', async () => {
+  const { splitWithLlm } = require('../src/extract/llmSplitter');
+  const pages40 = Array.from({ length: 40 }, (_, i) => `Trang ${i + 1} nội dung.`);
+  const one = (pages, opts) => splitWithLlm(pages, { ...opts,
+    chatFn: async () => ({ content: '{"chapters":[{"title":"Toàn bộ","start_page":1}]}', stats: {} }) });
+  const { out, ctx, job, resume } = setup({ splitResults: [one, one, one, one],
+    extract: async () => ({ text: pages40.join('\n'), pages: pages40, title: 'Sách A', author: null }) });
+  await processJob(job, ctx);
+  assert.strictEqual(out.scheduled[0].splitAttempt, 1);
+  assert.match(out.progress.find((p) => p.startsWith('RETRYING')), /1 phút/);
+  await resume();
+  await resume();
+  await resume();
+  assert.strictEqual(out.splitCalls.length, 4);
+  assert.match(out.failed, /Tách chương lỗi, đã thử lại 3 lần/);
+  assert.deepStrictEqual(out.chapterDone, []);
+  assert.strictEqual(out.admin.length, 1);
+  assert.match(out.admin[0].error, /1 chương cho sách 40 trang/);
+});
+
 test('TC-14: heuristic lỗi (trích chữ ném lỗi / PDF không có chữ) → failed như cũ, không báo admin', async () => {
   const a = setup({ mode: 'heuristic', extract: async () => { throw new Error('pdf hỏng'); } });
   await processJob(a.job, a.ctx);
@@ -190,7 +210,7 @@ test('TC-36: job llm → log chế độ + nguồn, model, số trang, promptCha
     const { out, ctx, job } = setup({ splitResults: [LLM_OK], source: 'ui' });
     await processJob(job, ctx);
     assert.ok(out.logs.some((l) => /\[chọn chế độ\] xong \(\d+ ms, llm, nguồn ui\)/.test(l)));
-    assertStep(out.logs, 'tách chương LLM qwen2.5:3b, lần đầu', new RegExp('4 trang, promptChars 90, numCtx 16384, '
+    assertStep(out.logs, 'tách chương LLM qwen2.5:3b, lần đầu', new RegExp('4 trang, headingPages 2, promptChars 90, numCtx 16384, '
       + 'firstByteMs 321000, totalMs 330000, prompt_eval_count 812, eval_count 37, 2 chương'));
 
     const auto = setup({ mode: '', splitResults: [LLM_OK] });

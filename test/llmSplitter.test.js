@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { LlmSplitError, buildPrompt, fullTitle, headingLines, splitWithLlm } = require('../src/extract/llmSplitter');
+const { LlmSplitError, buildPrompt, fullTitle, headingLines, parseChapters, splitWithLlm } = require('../src/extract/llmSplitter');
 const { NUM_CTX, isReady, pull } = require('../src/ollama');
 
 const PAGES = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'];
@@ -72,8 +72,8 @@ test('TC-10: Ollama timeout / ECONNREFUSED / thiếu bộ nhớ → LlmSplitErro
   await assert.rejects(splitWithLlm([], { model: 'm', chatFn: reply([]) }), LlmSplitError);
 });
 
-test('buildPrompt: đánh số trang, sách dài thì cắt mỗi trang ngắn hơn (vừa ngữ cảnh model 3b)', () => {
-  assert.strictEqual(buildPrompt(['Chương 1\n  Mở đầu', 'b']), '[Trang 1] Chương 1 Mở đầu\n[Trang 2] b');
+test('TC-50: không trang nào có tiêu đề → prompt cũ (phần đầu trang), sách dài cắt mỗi trang ngắn hơn', () => {
+  assert.strictEqual(buildPrompt(['mở đầu\n  nội dung', 'b']), '[Trang 1] mở đầu nội dung\n[Trang 2] b');
   const long = buildPrompt(Array.from({ length: 1000 }, () => 'x'.repeat(500)));
   assert.ok(long.length < 1000 * 60);
   assert.ok(long.startsWith(`[Trang 1] ${'x'.repeat(40)}\n`));
@@ -90,7 +90,8 @@ test('TC-32: lỗi socket chỉ có mã trong err.code / err.cause.code → mess
 
 test('TC-34: splitWithLlm trả kèm số liệu chat + số trang, độ dài prompt, numCtx (không chứa text trang)', async () => {
   const r = await splitWithLlm(PAGES, { model: 'm', chatFn: reply([{ title: 'C1', start_page: 1 }]) });
-  assert.deepStrictEqual(r.stats, { ...STATS, pages: 6, promptChars: buildPrompt(PAGES).length, numCtx: NUM_CTX });
+  assert.deepStrictEqual(r.stats,
+    { ...STATS, pages: 6, headingPages: 0, promptChars: buildPrompt(PAGES).length, numCtx: NUM_CTX });
   assert.ok(!JSON.stringify(r.stats).includes('p1'));
 });
 
@@ -108,6 +109,40 @@ test('TC-45: ghép tiêu đề sau ":" / ngoặc chưa đóng; không ghép thâ
   assert.strictEqual(fullTitle('CHƯƠNG 1', 'CHƯƠNG 10: KẾT\nThân bài.'), 'CHƯƠNG 1');
   assert.strictEqual(fullTitle('Giới thiệu', 'Giới thiệu về tác giả và cuốn sách này'), 'Giới thiệu');
   assert.strictEqual(fullTitle('C1', undefined), 'C1');
+});
+
+test('TC-46: không ghép khi dòng sau bắt đầu bằng từ khoá; header chạy đầu trang không nuốt tiêu đề chương', () => {
+  assert.deepStrictEqual(headingLines('PHẦN I\nCHƯƠNG 1: MỞ ĐẦU'), ['PHẦN I', 'CHƯƠNG 1: MỞ ĐẦU']);
+  assert.strictEqual(fullTitle('Chương 4', 'TÊN SÁCH\nCHƯƠNG 4: X\nthân bài'), 'CHƯƠNG 4: X');
+});
+
+test('TC-47: prompt chỉ có [Trang N] + dòng tiêu đề, bỏ trang chỉ có thân bài, không chứa thân bài', async () => {
+  const pages = ['bìa sách', 'CHƯƠNG 1: A\nnội dung BODYMARK', 'chỉ thân bài BODYMARK2', 'x', 'y'];
+  assert.strictEqual(buildPrompt(pages), '[Trang 2] CHƯƠNG 1: A');
+  const r = await splitWithLlm(pages, { model: 'm', chatFn: reply([{ title: 'C1', start_page: 2 }]) });
+  assert.strictEqual(r.stats.headingPages, 1);
+});
+
+test('TC-48: trang mục lục gửi nguyên văn; tiêu đề xuống dòng gửi dạng đã ghép', () => {
+  const pages = ['MỤC LỤC\nChương 1 …… 5\n  Chương 2 …… 9', 'CHƯƠNG 1:\nMỞ ĐẦU\nthân bài'];
+  assert.strictEqual(buildPrompt(pages), '[Trang 1]\nMỤC LỤC\nChương 1 …… 5\nChương 2 …… 9\n[Trang 2] CHƯƠNG 1: MỞ ĐẦU');
+});
+
+test('TC-49: 338 trang tiêu đề dài + mục lục dài → ≤ 30 000 ký tự, cắt theo ranh giới trang', () => {
+  const toc = ['Mục lục', ...Array.from({ length: 338 }, (_, i) => `Chương ${i + 1} ........ ${i + 2}`)].join('\n');
+  const pages = [toc, ...Array.from({ length: 337 }, (_, i) => `CHƯƠNG ${i + 2}: ${'A'.repeat(100)}\nthân bài`)];
+  const p = buildPrompt(pages);
+  assert.ok(p.length <= 30_000 && p.length > 25_000);
+  assert.ok(p.startsWith('[Trang 1]\nMục lục\nChương 1 '));
+  assert.match(p.split('\n').pop(), /^\[Trang \d+\] CHƯƠNG \d+: A{100}$/);
+  assert.ok(!p.includes('thân bài'));
+});
+
+test('TC-51: > 30 trang trả 1 chương → LlmSplitError (kể cả khi sẽ thêm "Giới thiệu"); 30 trang → hợp lệ', () => {
+  const one = (page) => JSON.stringify({ chapters: [{ title: 'A', start_page: page }] });
+  assert.throws(() => parseChapters(one(1), 31), (e) => e instanceof LlmSplitError && /1 chương cho sách 31 trang/.test(e.message));
+  assert.deepStrictEqual(parseChapters(one(1), 30), [{ title: 'A', startPage: 1 }]);
+  assert.throws(() => parseChapters(one(5), 338), LlmSplitError);
 });
 
 const fakeRes = (status, body) => ({ ok: status < 300, status, text: async () => body, json: async () => JSON.parse(body) });

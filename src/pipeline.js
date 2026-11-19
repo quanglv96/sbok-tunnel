@@ -224,7 +224,7 @@ async function runLlmSplit(s, ctx) {
       const r = await (deps.splitWithLlm || splitWithLlm)(pages, { model: s.model });
       chapters = r.chapters;
       const x = r.stats || {};
-      st.done(`${x.pages} trang, promptChars ${x.promptChars}, numCtx ${x.numCtx}, firstByteMs ${x.firstByteMs}, `
+      st.done(`${x.pages} trang, headingPages ${x.headingPages}, promptChars ${x.promptChars}, numCtx ${x.numCtx}, firstByteMs ${x.firstByteMs}, `
         + `totalMs ${x.totalMs}, prompt_eval_count ${x.prompt_eval_count}, eval_count ${x.eval_count}, ${chapters.length} chương`);
     } catch (err) {
       st.fail(err);
