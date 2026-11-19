@@ -304,7 +304,9 @@ async function ensureOllama({ rt, env, split, log, progress, dl, run, step, ol }
       }
       begin('Ollama: serve');
       progress(6, 'Khởi động Ollama');
-      ol.serve(exe, { ...env, OLLAMA_HOST: ollama.OLLAMA_HOST, OLLAMA_MODELS: path.join(rt, 'ollama-models') });
+      ol.serve(exe, { ...env, OLLAMA_HOST: ollama.OLLAMA_HOST, OLLAMA_MODELS: path.join(rt, 'ollama-models') }, {
+        onExit: (code, signal) => log(`[Ollama] serve đã thoát (code ${code}, signal ${signal})`),
+      });
       st = await ol.waitReady(split.model);
       if (!st.running) throw new Error('Ollama không khởi động được');
       cur.done();

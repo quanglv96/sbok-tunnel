@@ -73,12 +73,32 @@ async function waitReady(model, { tries = 30, delayMs = 1000, check = isReady } 
   return st;
 }
 
-/** Chạy `ollama serve` nền (không shell, không cửa sổ). Lỗi spawn chỉ làm waitReady trả running false. */
-function serve(exePath, env) {
-  const child = spawn(exePath, ['serve'], { env, stdio: 'ignore', windowsHide: true });
+// Tham số lần `serve` gần nhất, để khởi động lại khi server đã chết (ensureRunning)
+let lastServe = null;
+
+/**
+ * Chạy `ollama serve` nền (không shell, không cửa sổ). Lỗi spawn chỉ làm waitReady trả running false.
+ * `onExit(code, signal)`: báo khi server thoát (crash/bị tắt) để log nguyên nhân.
+ */
+function serve(exePath, env, { onExit, spawnFn = spawn } = {}) {
+  lastServe = { exePath, env, onExit };
+  const child = spawnFn(exePath, ['serve'], { env, stdio: 'ignore', windowsHide: true });
   child.on('error', () => {});
+  if (onExit) child.on('exit', (code, signal) => onExit(code, signal));
   child.unref();
   return child;
+}
+
+/**
+ * Trước mỗi lần tách chương: server đã chết (ECONNRESET/ECONNREFUSED) mà tunnel từng chạy `serve` thì chạy lại
+ * với tham số cũ và chờ lên. Ollama do người dùng tự chạy (tunnel chưa serve) thì không tự khởi động.
+ * Trả { running, hasModel, restarted }; không ném lỗi.
+ */
+async function ensureRunning(model, { check = isReady, start = serve, wait = waitReady } = {}) {
+  const st = await check(model);
+  if (st.running || !lastServe) return { ...st, restarted: false };
+  start(lastServe.exePath, lastServe.env, { onExit: lastServe.onExit });
+  return { ...(await wait(model, { check })), restarted: true };
 }
 
 /**
@@ -162,4 +182,6 @@ function chat(model, messages, { requestFn = http.request, timeoutMs = CHAT_TIME
   });
 }
 
-module.exports = { CHAT_TIMEOUT_MS, NUM_CTX, OLLAMA_HOST, OLLAMA_URL, chat, isReady, parseNdjsonLines, pull, serve, waitReady };
+module.exports = {
+  CHAT_TIMEOUT_MS, NUM_CTX, OLLAMA_HOST, OLLAMA_URL, chat, ensureRunning, isReady, parseNdjsonLines, pull, serve, waitReady,
+};

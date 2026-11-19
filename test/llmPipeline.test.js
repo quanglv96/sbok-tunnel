@@ -48,6 +48,7 @@ function setup({ mode = 'llm', source = 'ui', splitResults = [], extract, ollama
     },
     notifyAdmin: async (cfg, payload) => { out.admin.push(payload); },
     ollamaReady: async () => { out.readyCalls++; return ollama; },
+    ollamaEnsureRunning: async () => ({ ...ollama, restarted: false }),
   };
   const ctx = {
     config, backend, deps, log: (l) => out.logs.push(l), split: { mode, model: 'qwen2.5:3b', source },
@@ -117,6 +118,30 @@ test('TC-10/TC-11/TC-13: lỗi 1, 2, 3 → hẹn 1/5/15 phút từ pages.json; l
   assert.ok(!('pages' in out.admin[0]) && !JSON.stringify(out.admin[0]).includes('Trang một'), 'không gửi nội dung sách');
   assert.ok(!fs.existsSync(pagesJson));
   assert.strictEqual(readJob(config.jobsDir, 't1'), null);
+});
+
+test('TC-67 (hồi quy job 9db42cbb): Ollama sập ở lượt đầu (ECONNRESET) → lượt thử lại khởi động lại Ollama '
+  + 'trước khi gọi, không ECONNREFUSED mãi', async () => {
+  const { out, ctx, job, resume } = setup({
+    splitResults: [new LlmSplitError('Gọi Ollama lỗi: read ECONNRESET'), LLM_OK],
+  });
+  let alive = true;
+  const ensureCalls = [];
+  ctx.deps.ollamaEnsureRunning = async (model) => {
+    ensureCalls.push(model);
+    const restarted = !alive;
+    alive = true;
+    return { running: true, hasModel: true, restarted };
+  };
+  await processJob(job, ctx);
+  alive = false; // server đã chết sau ECONNRESET
+  await resume();
+  assert.deepStrictEqual(ensureCalls, ['qwen2.5:3b', 'qwen2.5:3b'], 'kiểm Ollama trước mỗi lượt tách');
+  const i = out.logs.findIndex((l) => /Ollama không chạy, đã khởi động lại \(\d+ ms, running=true, hasModel=true\)/.test(l));
+  const j = out.logs.findIndex((l) => /\[tách chương LLM qwen2\.5:3b, thử lại lần 1\/3\] bắt đầu/.test(l));
+  assert.ok(i >= 0 && i < j, 'khởi động lại trước khi gọi LLM');
+  assert.strictEqual(out.completed, 1);
+  assert.strictEqual(out.admin.length, 0);
 });
 
 test('TC-12: lỗi lần 1, lượt 2 thành công → chạy TTS, không báo admin, dọn pages.json, TTS còn đủ lượt đọc tiếp', async () => {

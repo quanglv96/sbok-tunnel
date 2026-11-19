@@ -7,7 +7,7 @@ const { runScan } = require('./sandbox/scanWorker');
 const { extractText } = require('./extract/pdfText');
 const { splitChapters } = require('./extract/chapterSplitter');
 const { splitWithLlm } = require('./extract/llmSplitter');
-const { isReady: ollamaReady } = require('./ollama');
+const { isReady: ollamaReady, ensureRunning: ollamaEnsureRunning } = require('./ollama');
 const { notifyChapterSplitFailed } = require('./adminAlert');
 const { synthesizeBatch } = require('./tts/ttsRunner');
 const { validateTts } = require('./ttsSettings');
@@ -246,6 +246,12 @@ async function runLlmSplit(s, ctx) {
       return;
     }
     const attempt = s.splitAttempt ? `thử lại lần ${s.splitAttempt}/${MAX_RETRIES}` : 'lần đầu';
+    // Ollama có thể đã sập ở lượt trước (ECONNRESET) → khởi động lại trước khi gọi, không thì mọi lượt đều ECONNREFUSED
+    const t0 = Date.now();
+    const ol = await (deps.ollamaEnsureRunning || ollamaEnsureRunning)(s.model);
+    if (ol.restarted) {
+      log(`Task ${taskId}: Ollama không chạy, đã khởi động lại (${Date.now() - t0} ms, running=${ol.running}, hasModel=${ol.hasModel})`);
+    }
     const st = step(log, `Task ${taskId}`, `tách chương LLM ${s.model}, ${attempt}`);
     let chapters;
     try {
