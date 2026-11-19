@@ -151,6 +151,48 @@ function alignToHeadings(chapters, pages) {
   return out;
 }
 
+/** BR-19: mục mục lục = dòng không rỗng của trang mục lục, bỏ dòng "Mục lục", bỏ đuôi dấu chấm dẫn/số trang. */
+function tocEntries(pages) {
+  const out = [];
+  for (const text of pages) {
+    if (!isTocPage(text)) continue;
+    for (const raw of String(text || '').split('\n')) {
+      const line = raw.replace(/\s+/g, ' ').trim();
+      if (!line || TOC_TITLE.test(norm(line))) continue;
+      const entry = line.replace(/[\s.…·]*\d+\s*$/, '').trim();
+      if (entry && entry.length <= HEADING_LINE_MAX) out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * BR-19: thêm mục mục lục LLM bỏ sót: mục chưa trùng chương nào (khớp hai chiều) và có trang khớp tiêu đề
+ * (không tính trang mục lục) chưa là trang bắt đầu của chương nào. Không có mục lục → trả nguyên.
+ */
+function addTocEntries(chapters, pages) {
+  const entries = tocEntries(pages);
+  if (entries.length === 0) return { chapters, tocCount: 0, added: 0 };
+  const list = [...chapters];
+  let added = 0;
+  for (const e of entries) {
+    const n = norm(e);
+    if (list.some((c) => startsAt(norm(c.title), n) || startsAt(n, norm(c.title)))) continue;
+    let page = 0;
+    for (let p = 1; p <= pages.length; p++) {
+      if (!isTocPage(pages[p - 1]) && titleOnPage(e, pages[p - 1])) {
+        page = p;
+        break;
+      }
+    }
+    if (!page || list.some((c) => c.startPage === page)) continue;
+    list.push({ title: e, startPage: page });
+    added++;
+  }
+  list.sort((a, b) => a.startPage - b.startPage);
+  return { chapters: list, tocCount: entries.length, added };
+}
+
 /**
  * BR-17: theo thứ tự trang, `[Trang N] ` + dòng tiêu đề (nối " | "); trang mục lục gửi nguyên các dòng;
  * trang không có tiêu đề bỏ qua; dừng khi vượt MAX_PROMPT_CHARS (không cắt giữa khối). Không khối nào → cách cũ.
@@ -199,10 +241,20 @@ async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
     const code = err && (err.code || (err.cause && err.cause.code));
     throw new LlmSplitError(`Gọi Ollama lỗi: ${msg}${code && !msg.includes(code) ? ` (${code})` : ''}`);
   }
-  const parsed = alignToHeadings(parseChapters(res && res.content, pages.length), pages)
-    .map((c) => ({ ...c, title: fullTitle(c.title, pages[c.startPage - 1]) }));
+  const toc = addTocEntries(alignToHeadings(parseChapters(res && res.content, pages.length), pages), pages);
+  // BR-5 lần 2 (AC-21): sau căn trang + bổ sung mục lục, đếm trước khi cutByPages tự thêm "Giới thiệu"
+  if (pages.length > MIN_PAGES_MULTI_CHAPTER && toc.chapters.length === 1) {
+    throw new LlmSplitError(`Sau căn trang chỉ còn 1 chương cho sách ${pages.length} trang`);
+  }
+  const parsed = toc.chapters.map((c) => ({ ...c, title: fullTitle(c.title, pages[c.startPage - 1]) }));
   const chapters = cutByPages(pages, parsed);
-  return { chapters, stats: { ...(res && res.stats), pages: pages.length, headingPages, promptChars: prompt.length, numCtx: NUM_CTX } };
+  return {
+    chapters,
+    stats: {
+      ...(res && res.stats), pages: pages.length, headingPages, tocEntries: toc.tocCount, tocAdded: toc.added,
+      promptChars: prompt.length, numCtx: NUM_CTX,
+    },
+  };
 }
 
 module.exports = { LlmSplitError, buildPrompt, cutByPages, fullTitle, headingLines, parseChapters, splitWithLlm };

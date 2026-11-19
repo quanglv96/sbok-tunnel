@@ -160,11 +160,14 @@ test('TC-53: LLM trả start_page lệch 1 mục + title dính " | …" → dờ
     { title: 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI | . – BERYL MARKHAM', start_page: 2 },
     { title: 'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO CẤP ĐỘ 5', start_page: 4 },
   ] }, pages);
+  // v9 (BR-19): GIỚI THIỆU, LỜI NÓI ĐẦU có trong mục lục và thân bài → thành phần riêng
   assert.deepStrictEqual(chapters.map((c) => c.title),
-    ['Giới thiệu', 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI', 'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO CẤP ĐỘ 5']);
-  assert.strictEqual(chapters[0].text, pages.slice(0, 3).join('\n'));
-  assert.strictEqual(chapters[1].text, pages.slice(3, 5).join('\n'));
-  assert.strictEqual(chapters[2].text, pages.slice(5).join('\n'));
+    ['Giới thiệu', 'GIỚI THIỆU', 'LỜI NÓI ĐẦU', 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI', 'CHƯƠNG HAI: KHẢ NĂNG LÃNH ĐẠO CẤP ĐỘ 5']);
+  assert.strictEqual(chapters[0].text, pages[0]);
+  assert.strictEqual(chapters[1].text, pages[1]);
+  assert.strictEqual(chapters[2].text, pages[2]);
+  assert.strictEqual(chapters[3].text, pages.slice(3, 5).join('\n'));
+  assert.strictEqual(chapters[4].text, pages.slice(5).join('\n'));
 });
 
 test('TC-54: không tìm thấy tiêu đề → giữ trang LLM; dời làm mất thứ tự → gộp vào chương trước; trang mục lục không tính', async () => {
@@ -228,4 +231,53 @@ test('ollama.isReady / pull: có model theo tên hoặc :latest; lỗi kết n�
     { running: false, hasModel: false });
   await pull('m', { fetchFn: async () => fakeRes(200, '{"status":"pulling"}\n{"status":"success"}') });
   await assert.rejects(pull('m', { fetchFn: async () => fakeRes(200, '{"error":"file does not exist"}') }), /does not exist/);
+});
+
+/** Sách n trang, trang không có trong map là thân bài thường. */
+const book = (n, map) => Array.from({ length: n }, (_, i) => map[i + 1] ?? `trang ${i + 1}.`);
+const run = (content, pages) => splitWithLlm(pages, { model: 'qwen2.5:3b', chatFn: reply(content) });
+const TWO = { chapters: [{ title: 'CHƯƠNG MỘT', start_page: 9 }, { title: 'CHƯƠNG HAI', start_page: 20 }] };
+const BODY = { 3: 'GIỚI THIỆU\nnội dung.', 6: 'LỜI NÓI ĐẦU\nnội dung.', 9: 'CHƯƠNG MỘT\nnội dung.', 20: 'CHƯƠNG HAI\nnội dung.',
+  35: 'PHỤ LỤC\nnội dung.' };
+
+test('TC-56: mục lục có GIỚI THIỆU/LỜI NÓI ĐẦU/PHỤ LỤC LLM bỏ sót → thêm phần riêng theo thứ tự trang', async () => {
+  const pages = book(40, { ...BODY,
+    2: 'MỤC LỤC\nGIỚI THIỆU ........ 3\nLỜI NÓI ĐẦU 6\nCHƯƠNG MỘT ..... 9\nPHỤ LỤC 35' });
+  const { chapters, stats } = await run(TWO, pages);
+  assert.deepStrictEqual(chapters.map((c) => c.title),
+    ['Giới thiệu', 'GIỚI THIỆU', 'LỜI NÓI ĐẦU', 'CHƯƠNG MỘT', 'CHƯƠNG HAI', 'PHỤ LỤC']);
+  assert.deepStrictEqual(chapters.slice(1).map((c) => c.text.split('\n')[0]),
+    ['GIỚI THIỆU', 'LỜI NÓI ĐẦU', 'CHƯƠNG MỘT', 'CHƯƠNG HAI', 'PHỤ LỤC']);
+  assert.ok(chapters[2].text.endsWith('trang 8.'));
+  assert.strictEqual(stats.tocEntries, 4);
+  assert.strictEqual(stats.tocAdded, 3);
+});
+
+test('TC-57: mục trùng chương, chỉ có ở mục lục, trùng trang chương khác, mục con thường, dòng > 120 → không thêm', async () => {
+  const pages = book(40, { ...BODY, 3: 'trang 3.', 6: 'trang 6.', 35: 'trang 35.',
+    2: `MỤC LỤC\nChương một ...... 9\nTÁC GIẢ 15\nGHI CHÚ 20\nTốt là kẻ thù của vĩ đại 12\n${'A'.repeat(130)} 30`,
+    12: 'tốt là kẻ thù của vĩ đại là thân bài thường.', 20: 'CHƯƠNG HAI\nmở đầu.\nGHI CHÚ\nnội dung.',
+    30: `${'A'.repeat(130)}\nnội dung.` });
+  const { chapters, stats } = await run(TWO, pages);
+  assert.deepStrictEqual(chapters.map((c) => c.title), ['Giới thiệu', 'CHƯƠNG MỘT', 'CHƯƠNG HAI']);
+  assert.strictEqual(stats.tocEntries, 4);
+  assert.strictEqual(stats.tocAdded, 0);
+});
+
+test('TC-58: không có trang mục lục → kết quả như chỉ căn trang BR-18', async () => {
+  const { chapters, stats } = await run(TWO, book(40, BODY));
+  assert.deepStrictEqual(chapters.map((c) => c.title), ['Giới thiệu', 'CHƯƠNG MỘT', 'CHƯƠNG HAI']);
+  assert.ok(chapters[1].text.startsWith('CHƯƠNG MỘT') && chapters[2].text.startsWith('CHƯƠNG HAI'));
+  assert.strictEqual(stats.tocEntries, 0);
+  assert.strictEqual(stats.tocAdded, 0);
+});
+
+test('TC-59: sau căn trang còn 1 chương: 40 trang → lỗi; mục lục thêm được 1 phần → hợp lệ; 30 trang → hợp lệ', async () => {
+  const merged = { chapters: [{ title: 'CHƯƠNG MỘT', start_page: 5 }, { title: 'CHƯƠNG HAI', start_page: 20 }] };
+  await assert.rejects(run(merged, book(40, { 25: 'CHƯƠNG MỘT\nnội dung.' })),
+    (e) => e instanceof LlmSplitError && /Sau căn trang chỉ còn 1 chương cho sách 40 trang/.test(e.message));
+  const withToc = await run(merged, book(40, { 2: 'MỤC LỤC\nLỜI NÓI ĐẦU 3', 3: 'LỜI NÓI ĐẦU\nnội dung.', 25: 'CHƯƠNG MỘT\nnội dung.' }));
+  assert.deepStrictEqual(withToc.chapters.map((c) => c.title), ['Giới thiệu', 'LỜI NÓI ĐẦU', 'CHƯƠNG MỘT']);
+  const short = await run(merged, book(30, { 25: 'CHƯƠNG MỘT\nnội dung.' }));
+  assert.deepStrictEqual(short.chapters.map((c) => c.title), ['Giới thiệu', 'CHƯƠNG MỘT']);
 });

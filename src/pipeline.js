@@ -75,6 +75,33 @@ function spokenText(bookTitle, ch) {
 }
 
 /**
+ * BR-20: tên file chương (không đuôi) `003 - Tiêu đề`: bỏ ký tự cấm Windows và ký tự điều khiển, gộp khoảng trắng,
+ * cắt 80 ký tự, bỏ dấu chấm/khoảng trắng cuối; tiêu đề rỗng → chỉ số thứ tự.
+ */
+function chapterFileName(index, title) {
+  const num = String(index).padStart(3, '0');
+  const clean = String(title || '').replace(/\s+/g, ' ').replace(/[\\/:*?"<>|]|\p{Cc}/gu, '').replace(/\s+/g, ' ').trim()
+    .slice(0, 80).replace(/[.\s]+$/, '');
+  return clean ? `${num} - ${clean}` : num;
+}
+
+/**
+ * BR-20: MP3 của chương trong thư mục cache: `003.mp3`/`003 - Tiêu đề.mp3` (job mới) hoặc `{index}.mp3` (job cũ).
+ * Dò theo thư mục vì job.json đã bị xoá khi job hoàn tất (upload chạy khi có người nghe).
+ */
+function chapterMp3(dir, index) {
+  const num = String(index).padStart(3, '0');
+  let files = [];
+  try {
+    files = fs.readdirSync(dir);
+  } catch {
+    // không còn thư mục → coi như không còn MP3
+  }
+  const hit = files.find((f) => f === `${num}.mp3` || (f.startsWith(`${num} - `) && f.endsWith('.mp3')));
+  return path.join(dir, hit || `${index}.mp3`);
+}
+
+/**
  * Xử lý 1 job: sandbox (BR-4) -> trích text + tách chương (BR-8) -> ghi txt + `job.json` (chụp cấu hình đọc) -> TTS,
  * báo từng chương (BR-18). `job.resume` = lượt đọc tiếp từ `job.json`. PDF luôn bị xoá; txt chương giữ lâu dài
  * (BR-16 v13); MP3 giữ lâu dài ở `{cacheDir}/{taskId}` (BR-19, chỉ đẩy R2 khi có người nghe – `uploadChapter`).
@@ -156,10 +183,11 @@ async function prepareChapters(base, chapters, chars, ctx) {
   const textDir = path.join(config.jobsDir, taskId);
   return timed(log, `Task ${taskId}`, 'ghi txt + job.json', () => {
     fs.mkdirSync(textDir, { recursive: true });
-    for (const ch of chapters) fs.writeFileSync(path.join(textDir, `${ch.index}.txt`), spokenText(bookTitle, ch), 'utf8');
+    const names = chapters.map((ch) => chapterFileName(ch.index, ch.title));
+    chapters.forEach((ch, i) => fs.writeFileSync(path.join(textDir, `${names[i]}.txt`), spokenText(bookTitle, ch), 'utf8'));
     const state = {
       taskId, fileName: base.fileName, bookTitle, author: base.author,
-      chapters: chapters.map((ch) => ({ index: ch.index, title: ch.title, chars: ch.text.length })),
+      chapters: chapters.map((ch, i) => ({ index: ch.index, title: ch.title, name: names[i], chars: ch.text.length })),
       done: {}, reported: [], attempt: 0, nextRetryAt: null, tts: base.tts,
     };
     saveJob(config.jobsDir, state);
@@ -224,7 +252,7 @@ async function runLlmSplit(s, ctx) {
       const r = await (deps.splitWithLlm || splitWithLlm)(pages, { model: s.model });
       chapters = r.chapters;
       const x = r.stats || {};
-      st.done(`${x.pages} trang, headingPages ${x.headingPages}, promptChars ${x.promptChars}, numCtx ${x.numCtx}, firstByteMs ${x.firstByteMs}, `
+      st.done(`${x.pages} trang, headingPages ${x.headingPages}, tocEntries ${x.tocEntries}, tocAdded ${x.tocAdded}, promptChars ${x.promptChars}, numCtx ${x.numCtx}, firstByteMs ${x.firstByteMs}, `
         + `totalMs ${x.totalMs}, prompt_eval_count ${x.prompt_eval_count}, eval_count ${x.eval_count}, ${chapters.length} chương`);
     } catch (err) {
       st.fail(err);
@@ -336,7 +364,11 @@ async function runTts(state, ctx) {
     if (pending.length) {
       fs.mkdirSync(mp3Dir, { recursive: true });
       // P1 (AC-23): gọi TTS 1 lần cho các chương còn lại (model nạp 1 lần)
-      const items = pending.map((c) => ({ in: path.join(textDir, `${c.index}.txt`), out: path.join(mp3Dir, `${c.index}.mp3`) }));
+      // BR-20: job cũ (job.json không có name) dùng tên `{index}`
+      const items = pending.map((c) => {
+        const name = c.name ?? c.index;
+        return { in: path.join(textDir, `${name}.txt`), out: path.join(mp3Dir, `${name}.mp3`) };
+      });
       let cur = 0;
       let startedAt = Date.now();
       const label = () => `Chương ${chapters.indexOf(pending[cur]) + 1}/${chapters.length}`;
@@ -421,7 +453,7 @@ async function uploadChapter(taskId, index, ctx) {
 }
 
 async function doUpload(taskId, index, { config, backend, uploader, log = console.log }) {
-  const mp3 = path.join(config.cacheDir, taskId, `${index}.mp3`);
+  const mp3 = chapterMp3(path.join(config.cacheDir, taskId), index);
   log(`Đẩy chương ${taskId}/${index}: bắt đầu`);
   if (!fs.existsSync(mp3)) {
     log(`Đẩy chương ${taskId}/${index}: không còn MP3`);
@@ -441,4 +473,4 @@ async function doUpload(taskId, index, { config, backend, uploader, log = consol
   log(`Đẩy chương ${taskId}/${index} lên R2 xong (${Date.now() - t0} ms)`);
 }
 
-module.exports = { processJob, progressText, spokenText, uploadChapter };
+module.exports = { chapterFileName, processJob, progressText, spokenText, uploadChapter };

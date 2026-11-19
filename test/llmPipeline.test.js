@@ -15,7 +15,7 @@ const THREE = [1, 2, 3].map((n) => `Chương ${n}\n${'Nội dung chương. '.rep
 const PAGES = ['Trang một nội dung.', 'Trang hai nội dung.', 'Trang ba nội dung.', 'Trang bốn nội dung.'];
 
 const STATS = { prompt_eval_count: 812, eval_count: 37, firstByteMs: 321000, totalMs: 330000, pages: 4, headingPages: 2, promptChars: 90,
-  numCtx: 16384 };
+  numCtx: 16384, tocEntries: 5, tocAdded: 3 };
 
 function setup({ mode = 'llm', source = 'ui', splitResults = [], extract, ollama = { running: true, hasModel: true } } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbok-llm-'));
@@ -78,7 +78,7 @@ test('AC-2: mode llm thành công → chương theo LLM, TTS + báo chương ch�
   assert.strictEqual(out.splitCalls[0].opts.model, 'qwen2.5:3b');
   assert.deepStrictEqual(out.chapterDone, [1, 2]);
   assert.strictEqual(out.completed, 1);
-  assert.ok(fs.readFileSync(path.join(config.jobsDir, 't1', '1.txt'), 'utf8').startsWith('Sách A. Phần 1.\n'));
+  assert.ok(fs.readFileSync(path.join(config.jobsDir, 't1', '001 - Phần 1.txt'), 'utf8').startsWith('Sách A. Phần 1.\n'));
   assert.ok(!fs.existsSync(pdfPath));
   assert.ok(!fs.existsSync(pagesJson));
   assert.strictEqual(readJob(config.jobsDir, 't1'), null);
@@ -210,7 +210,7 @@ test('TC-36: job llm → log chế độ + nguồn, model, số trang, promptCha
     const { out, ctx, job } = setup({ splitResults: [LLM_OK], source: 'ui' });
     await processJob(job, ctx);
     assert.ok(out.logs.some((l) => /\[chọn chế độ\] xong \(\d+ ms, llm, nguồn ui\)/.test(l)));
-    assertStep(out.logs, 'tách chương LLM qwen2.5:3b, lần đầu', new RegExp('4 trang, headingPages 2, promptChars 90, numCtx 16384, '
+    assertStep(out.logs, 'tách chương LLM qwen2.5:3b, lần đầu', new RegExp('4 trang, headingPages 2, tocEntries 5, tocAdded 3, promptChars 90, numCtx 16384, '
       + 'firstByteMs 321000, totalMs 330000, prompt_eval_count 812, eval_count 37, 2 chương'));
 
     const auto = setup({ mode: '', splitResults: [LLM_OK] });
@@ -240,4 +240,79 @@ test('TC-18: chưa chọn mode, Ollama không chạy hoặc thiếu model → he
     assert.strictEqual(out.splitCalls.length, 0);
     assert.deepStrictEqual(out.chapterDone, [1, 2, 3]);
   }
+});
+
+test('TC-60: sau căn trang chỉ còn 1 chương (40 trang) → LlmSplitError, hẹn thử lại 1 phút', async () => {
+  const { splitWithLlm } = require('../src/extract/llmSplitter');
+  const pages40 = Array.from({ length: 40 }, (_, i) => (i === 24 ? 'CHƯƠNG MỘT\nnội dung.' : `Trang ${i + 1} nội dung.`));
+  const merged = (pages, opts) => splitWithLlm(pages, { ...opts, chatFn: async () => ({
+    content: '{"chapters":[{"title":"CHƯƠNG MỘT","start_page":5},{"title":"CHƯƠNG HAI","start_page":20}]}', stats: {} }) });
+  const { out, ctx, job } = setup({ splitResults: [merged],
+    extract: async () => ({ text: pages40.join('\n'), pages: pages40, title: 'Sách A', author: null }) });
+  await processJob(job, ctx);
+  assert.strictEqual(out.scheduled[0].splitAttempt, 1);
+  assert.match(out.progress.find((p) => p.startsWith('RETRYING')), /1 phút/);
+  assert.ok(out.logs.some((l) => l.includes('Sau căn trang chỉ còn 1 chương cho sách 40 trang')), out.logs.join('\n'));
+});
+
+test('TC-61/TC-62: chapterFileName bỏ ký tự cấm, gộp khoảng trắng, giữ dấu, cắt 80, rỗng → số thứ tự', () => {
+  const { chapterFileName } = require('../src/pipeline');
+  assert.strictEqual(chapterFileName(3, 'CHƯƠNG MỘT: TỐT / VĨ ĐẠI?'), '003 - CHƯƠNG MỘT TỐT VĨ ĐẠI');
+  assert.strictEqual(chapterFileName(3, `${'X'.repeat(79)}.${'Y'.repeat(120)}`), `003 - ${'X'.repeat(79)}`);
+  assert.ok(chapterFileName(3, 'Á'.repeat(200)).length <= '003 - '.length + 80);
+  assert.strictEqual(chapterFileName(3, '<>:"/\\|?*'), '003');
+  assert.strictEqual(chapterFileName(3, 'A\u0007B\tC  .'), '003 - AB C');
+  assert.strictEqual(chapterFileName(12, ''), '012');
+  assert.notStrictEqual(chapterFileName(1, 'Giống'), chapterFileName(2, 'Giống'));
+});
+
+test('TC-63: job.json cũ không có name → TTS/upload dùng {index}; job mới → upload tìm mp3 theo tên, key R2 {index}.mp3',
+  async () => {
+    const { saveJob } = require('../src/retryQueue');
+    const { uploadChapter } = require('../src/pipeline');
+    const uploads = [];
+    const upCtx = (config) => ({ config, log: () => {},
+      backend: { chapterUploaded: async (id, i, key) => { uploads.push({ key }); }, chapterUploadFailed: async () => { uploads.push('missing'); } },
+      uploader: { upload: async (key, file) => { uploads.push({ key, file: path.basename(file) }); } } });
+
+    const old = setup({ mode: 'heuristic' });
+    const items = [];
+    old.ctx.deps.synthesizeBatch = async (cfg, its, log, onDone) => {
+      its.forEach((it, i) => { items.push(it); fs.writeFileSync(it.out, 'mp3'); onDone(i, { durationSec: 1 }); });
+    };
+    fs.mkdirSync(path.join(old.config.jobsDir, 't1'), { recursive: true });
+    fs.writeFileSync(path.join(old.config.jobsDir, 't1', '1.txt'), 'Chương cũ');
+    saveJob(old.config.jobsDir, { taskId: 't1', fileName: 'a.pdf', bookTitle: 'Sách A', author: null,
+      chapters: [{ index: 1, title: 'C1', chars: 9 }], done: {}, reported: [], attempt: 1, nextRetryAt: null, tts: null });
+    await old.resume();
+    assert.strictEqual(path.basename(items[0].in), '1.txt');
+    assert.strictEqual(path.basename(items[0].out), '1.mp3');
+    assert.strictEqual(old.out.completed, 1);
+    await uploadChapter('t1', 1, upCtx(old.config));
+    assert.deepStrictEqual(uploads.shift(), { key: 'books/t1/1.mp3', file: '1.mp3' });
+    uploads.length = 0;
+
+    const neu = setup({ splitResults: [LLM_OK] });
+    await processJob(neu.job, neu.ctx);
+    assert.strictEqual(readJob(neu.config.jobsDir, 't1'), null, 'job.json đã xoá khi hoàn tất');
+    assert.ok(fs.existsSync(path.join(neu.config.cacheDir, 't1', '002 - Phần 2.mp3')));
+    await uploadChapter('t1', 2, upCtx(neu.config));
+    assert.deepStrictEqual(uploads[0], { key: 'books/t1/2.mp3', file: '002 - Phần 2.mp3' });
+    await uploadChapter('t1', 9, upCtx(neu.config));
+    assert.strictEqual(uploads[2], 'missing');
+  });
+
+test('TC-64: heuristic → file txt/mp3 theo BR-20, payload chapterDone không đổi', async () => {
+  const { out, ctx, job, config } = setup({ mode: 'heuristic' });
+  const payloads = [];
+  ctx.backend.chapterDone = async (id, title, author, ch) => { payloads.push(ch); return true; };
+  await processJob(job, ctx);
+  assert.strictEqual(out.completed, 1);
+  const txt = fs.readdirSync(path.join(config.jobsDir, 't1')).filter((f) => f.endsWith('.txt')).sort();
+  const mp3 = fs.readdirSync(path.join(config.cacheDir, 't1')).sort();
+  assert.strictEqual(txt.length, 3);
+  txt.forEach((f, i) => assert.match(f, new RegExp(`^00${i + 1} - .+\\.txt$`)));
+  assert.deepStrictEqual(mp3, txt.map((f) => f.replace(/\.txt$/, '.mp3')));
+  assert.deepStrictEqual(payloads.map((p) => p.index), [1, 2, 3]);
+  payloads.forEach((p) => assert.deepStrictEqual(Object.keys(p).sort(), ['durationSec', 'index', 'sizeBytes', 'title']));
 });
