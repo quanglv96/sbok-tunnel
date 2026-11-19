@@ -22,11 +22,14 @@ const SYSTEM_PROMPT = [
 
 // BR-5 (PMO chốt #40): sách dài hơn ngưỡng này mà LLM trả đúng 1 chương = kết quả sai
 const MIN_PAGES_MULTI_CHAPTER = 30;
+// Job e83b222e: runner Ollama chết ("exit status 2") ở num_ctx lớn trên máy ít RAM → lùi dần ngữ cảnh
+const CTX_STEPS = [NUM_CTX, 8192, 4096];
+const RUNNER_CRASH = /llama runner process has terminated|out of memory|unable to allocate|failed to allocate|bad allocation/i;
 const TOC_TITLE = /^(mục lục|contents|table of contents)$/i;
 
 /** Cách cũ: phần đầu mỗi trang (dùng khi không trang nào có dòng tiêu đề). */
-function legacyPrompt(pages) {
-  const budget = Math.max(PAGE_HEAD_MIN, Math.min(PAGE_HEAD_MAX, Math.floor(MAX_PROMPT_CHARS / Math.max(pages.length, 1))));
+function legacyPrompt(pages, maxChars = MAX_PROMPT_CHARS) {
+  const budget = Math.max(PAGE_HEAD_MIN, Math.min(PAGE_HEAD_MAX, Math.floor(maxChars / Math.max(pages.length, 1))));
   return pages.map((p, i) => `[Trang ${i + 1}] ${String(p || '').replace(/\s+/g, ' ').trim().slice(0, budget)}`).join('\n');
 }
 
@@ -197,7 +200,7 @@ function addTocEntries(chapters, pages) {
  * BR-17: theo thứ tự trang, `[Trang N] ` + dòng tiêu đề (nối " | "); trang mục lục gửi nguyên các dòng;
  * trang không có tiêu đề bỏ qua; dừng khi vượt MAX_PROMPT_CHARS (không cắt giữa khối). Không khối nào → cách cũ.
  */
-function promptOf(pages) {
+function promptOf(pages, maxChars = MAX_PROMPT_CHARS) {
   const blocks = [];
   let total = 0;
   for (let i = 0; i < pages.length; i++) {
@@ -212,11 +215,13 @@ function promptOf(pages) {
       block = `[Trang ${i + 1}] ${hs.join(' | ')}`;
     }
     const add = block.length + (blocks.length ? 1 : 0);
-    if (total + add > MAX_PROMPT_CHARS) break;
+    if (total + add > maxChars) break;
     blocks.push(block);
     total += add;
   }
-  return blocks.length ? { prompt: blocks.join('\n'), headingPages: blocks.length } : { prompt: legacyPrompt(pages), headingPages: 0 };
+  return blocks.length
+    ? { prompt: blocks.join('\n'), headingPages: blocks.length }
+    : { prompt: legacyPrompt(pages, maxChars), headingPages: 0 };
 }
 
 function buildPrompt(pages) {
@@ -229,17 +234,28 @@ function buildPrompt(pages) {
  */
 async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
   if (!Array.isArray(pages) || pages.length === 0) throw new LlmSplitError('Không có text trang để tách');
-  const { prompt, headingPages } = promptOf(pages);
   let res;
-  try {
-    res = await chatFn(model, [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: prompt },
-    ], timeoutMs ? { timeoutMs } : {});
-  } catch (err) {
-    const msg = String((err && err.message) || err);
-    const code = err && (err.code || (err.cause && err.cause.code));
-    throw new LlmSplitError(`Gọi Ollama lỗi: ${msg}${code && !msg.includes(code) ? ` (${code})` : ''}`);
+  let prompt;
+  let headingPages;
+  let numCtx;
+  const tried = [];
+  // Runner Ollama chết khi nạp model (thiếu RAM cho KV cache) → thử ngay ngữ cảnh nhỏ hơn, prompt co theo tỉ lệ
+  for (numCtx of CTX_STEPS) {
+    ({ prompt, headingPages } = promptOf(pages, Math.floor(MAX_PROMPT_CHARS * numCtx / NUM_CTX)));
+    tried.push(numCtx);
+    try {
+      res = await chatFn(model, [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
+      ], { numCtx, ...(timeoutMs ? { timeoutMs } : {}) });
+      break;
+    } catch (err) {
+      const msg = String((err && err.message) || err);
+      if (RUNNER_CRASH.test(msg) && numCtx !== CTX_STEPS[CTX_STEPS.length - 1]) continue;
+      const code = err && (err.code || (err.cause && err.cause.code));
+      const ctxNote = tried.length > 1 ? ` [đã thử num_ctx ${tried.join('/')}]` : '';
+      throw new LlmSplitError(`Gọi Ollama lỗi: ${msg}${code && !msg.includes(code) ? ` (${code})` : ''}${ctxNote}`);
+    }
   }
   const toc = addTocEntries(alignToHeadings(parseChapters(res && res.content, pages.length), pages), pages);
   // BR-5 lần 2 (AC-21): sau căn trang + bổ sung mục lục, đếm trước khi cutByPages tự thêm "Giới thiệu"
@@ -252,7 +268,7 @@ async function splitWithLlm(pages, { model, chatFn = chat, timeoutMs } = {}) {
     chapters,
     stats: {
       ...(res && res.stats), pages: pages.length, headingPages, tocEntries: toc.tocCount, tocAdded: toc.added,
-      promptChars: prompt.length, numCtx: NUM_CTX,
+      promptChars: prompt.length, numCtx, ctxTried: tried.join('/'),
     },
   };
 }

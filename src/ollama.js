@@ -127,8 +127,8 @@ async function pull(model, { fetchFn = fetch, onProgress } = {}) {
  * 5 phút); Ollama chỉ gửi header sau khi xử lý xong prompt. Thời gian chờ duy nhất là `timeoutMs` tổng.
  * Trả { content, stats }; lỗi socket giữ nguyên `err.code` (ECONNREFUSED…).
  */
-function chat(model, messages, { requestFn = http.request, timeoutMs = CHAT_TIMEOUT_MS } = {}) {
-  const body = JSON.stringify({ model, messages, stream: true, format: 'json', options: { temperature: 0, num_ctx: NUM_CTX } });
+function chat(model, messages, { requestFn = http.request, timeoutMs = CHAT_TIMEOUT_MS, numCtx = NUM_CTX } = {}) {
+  const body = JSON.stringify({ model, messages, stream: true, format: 'json', options: { temperature: 0, num_ctx: numCtx } });
   const started = Date.now();
   return new Promise((resolve, reject) => {
     let settled = false;
