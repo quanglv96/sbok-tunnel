@@ -177,6 +177,44 @@ test('TC-54: không tìm thấy tiêu đề → giữ trang LLM; dời làm mấ
     ['A', pages.slice(1, 4).join('\n')],
     ['Chương 2: B', pages.slice(4).join('\n')],
   ]);
+  // chương đầu LLM đặt ở trang 1, trang 1 không có dòng khớp nhưng trang 2 có → vẫn giữ trang 1
+  const first = await split({ chapters: [{ title: 'A', start_page: 1 }, { title: 'B', start_page: 3 }] },
+    ['p1', 'A\nthân', 'p3']);
+  assert.deepStrictEqual(first.map((c) => [c.title, c.text]), [['A', 'p1\nA\nthân'], ['B', 'p3']]);
+});
+
+test('TC-55: khớp kiểu (b) chỉ khi dòng có từ khoá; "CHƯƠNG 1" không khớp "CHƯƠNG 10"; tiêu đề rỗng trước " | " giữ nguyên', async () => {
+  // trang 3 chỉ có "CHƯƠNG 1" → khớp kiểu (b), giữ trang 3 (không dời về trang 2 dù trang 2 khớp kiểu (a))
+  let pages = ['p1', 'CHƯƠNG 1: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI (TRÍCH)', 'CHƯƠNG 1\nthân', 'p4'];
+  let chapters = await split({ chapters: [{ title: 'Chương 1: Tốt là kẻ thù của vĩ đại', start_page: 3 }] }, pages);
+  assert.deepStrictEqual(chapters.map((c) => [c.title, c.text]), [
+    ['Giới thiệu', pages.slice(0, 2).join('\n')],
+    ['Chương 1: Tốt là kẻ thù của vĩ đại', pages.slice(2).join('\n')],
+  ]);
+
+  // "CHƯƠNG 1" ở trang chỉ có "CHƯƠNG 10: KẾT" → không khớp, dời về trang có "CHƯƠNG 1"
+  pages = ['p1', 'CHƯƠNG 1\nthân 1', 'CHƯƠNG 10: KẾT\nthân 10', 'p4'];
+  chapters = await split({ chapters: [{ title: 'CHƯƠNG 1', start_page: 3 }] }, pages);
+  assert.deepStrictEqual(chapters.map((c) => [c.title, c.text]), [
+    ['Giới thiệu', 'p1'],
+    ['CHƯƠNG 1', pages.slice(1).join('\n')],
+  ]);
+  // … không trang nào có "CHƯƠNG 1" → giữ trang LLM
+  pages = ['p1', 'p2', 'CHƯƠNG 10: KẾT\nthân 10', 'p4'];
+  chapters = await split({ chapters: [{ title: 'CHƯƠNG 1', start_page: 3 }] }, pages);
+  assert.deepStrictEqual(chapters.map((c) => c.text), ['p1\np2', pages.slice(2).join('\n')]);
+
+  // dòng viết hoa không từ khoá "GIỚI THIỆU" không khớp kiểu (b) → dời về trang "GIỚI THIỆU VÀ LỜI CẢM ƠN"
+  pages = ['p1', 'GIỚI THIỆU VÀ LỜI CẢM ƠN\nthân', 'GIỚI THIỆU\nnội dung', 'p4'];
+  chapters = await split({ chapters: [{ title: 'GIỚI THIỆU VÀ LỜI CẢM ƠN', start_page: 3 }] }, pages);
+  assert.deepStrictEqual(chapters.map((c) => [c.title, c.text]), [
+    ['Giới thiệu', 'p1'],
+    ['GIỚI THIỆU VÀ LỜI CẢM ƠN', pages.slice(1).join('\n')],
+  ]);
+
+  // " | X": phần trước " | " rỗng → giữ tiêu đề (parseChapters đã trim thành "| X"), chương không bị bỏ
+  chapters = await split({ chapters: [{ title: 'C1', start_page: 1 }, { title: ' | X', start_page: 4 }] });
+  assert.deepStrictEqual(chapters.map((c) => c.title), ['C1', '| X']);
 });
 
 const fakeRes = (status, body) => ({ ok: status < 300, status, text: async () => body, json: async () => JSON.parse(body) });
