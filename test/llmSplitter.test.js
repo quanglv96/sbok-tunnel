@@ -91,7 +91,7 @@ test('TC-32: lỗi socket chỉ có mã trong err.code / err.cause.code → mess
 test('TC-34: splitWithLlm trả kèm số liệu chat + số trang, độ dài prompt, numCtx (không chứa text trang)', async () => {
   const r = await splitWithLlm(PAGES, { model: 'm', chatFn: reply([{ title: 'C1', start_page: 1 }]) });
   assert.deepStrictEqual(r.stats,
-    { ...STATS, pages: 6, headingPages: 0, promptChars: buildPrompt(PAGES).length, numCtx: NUM_CTX });
+    { ...STATS, pages: 6, headingPages: 0, tocEntries: 0, tocAdded: 0, promptChars: buildPrompt(PAGES).length, numCtx: NUM_CTX });
   assert.ok(!JSON.stringify(r.stats).includes('p1'));
 });
 
