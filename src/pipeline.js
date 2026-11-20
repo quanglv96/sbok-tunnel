@@ -64,15 +64,11 @@ function progressText(label, chapterRatio, doneChars, totalChars) {
 }
 
 /**
- * #151: đầu mỗi chương đọc tên sách và tên chương. "Giới thiệu" đã có bìa (tên sách) nên đọc nguyên văn;
- * "Toàn bộ" (không tách được chương) chỉ đọc tên sách.
+ * PMO #117: chỉ đọc nội dung chương, không thêm câu mở đầu tên sách + tên chương (#151 cũ) vì text chương đã bắt
+ * đầu bằng tiêu đề trên trang → bị đọc lặp. `bookTitle` giữ trong chữ ký để không đổi nơi gọi.
  */
 function spokenText(bookTitle, ch) {
-  const text = reflow(stripFootnotes(ch.text));
-  if (ch.title === 'Giới thiệu') return joinNumbering(unCaps(text));
-  const sentence = (s) => `${s.trim().replace(/[\s.:;,\-–—]+$/, '')}.`;
-  const head = ch.title === 'Toàn bộ' ? sentence(bookTitle) : `${sentence(bookTitle)} ${sentence(ch.title)}`;
-  return joinNumbering(unCaps(`${head}\n${text}`));
+  return joinNumbering(unCaps(reflow(stripFootnotes(ch.text))));
 }
 
 /** PMO #83: dấu chú thích "[12]", "[3, 4]", "[5-7]" (số ≤ 3 chữ số, không đụng năm "[2001]") không đọc ra. */

@@ -30,9 +30,17 @@ test('TC-71c: từ viết tắt đứng riêng giữ nguyên, không đổi ch�
   assert.strictEqual(intro(text), text);
 });
 
-test('TC-71d: tiêu đề chương viết hoa ở đầu đề cũng đọc thành tên, dòng kết thúc bằng dấu phẩy được ghép', () => {
+test('TC-71d: dòng kết thúc bằng dấu phẩy được ghép, không thêm đầu đề', () => {
   const out = spokenText('Từ tốt đến vĩ đại', { title: 'SỰ TÒ MÒ KIÊN TRÌ', text: 'Johnson,\nMerck và Pepsi.' });
-  assert.strictEqual(out, 'Từ tốt đến vĩ đại. Sự Tò Mò Kiên Trì.\nJohnson, Merck và Pepsi.');
+  assert.strictEqual(out, 'Johnson, Merck và Pepsi.');
+});
+
+test('TC-72 (PMO #117): chương không mở đầu bằng tên sách + tên chương, tiêu đề chỉ đọc một lần từ nội dung', () => {
+  const ch = { title: 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI', text: 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA\nVĨ ĐẠI\nTốt là kẻ thù.' };
+  const out = spokenText('Từ tốt đến vĩ đại', ch);
+  assert.strictEqual(out, 'Chương Một: Tốt Là Kẻ Thù Của Vĩ Đại.\nTốt là kẻ thù.');
+  assert.ok(!out.includes('Từ tốt đến vĩ đại'));
+  assert.strictEqual(spokenText('Từ tốt đến vĩ đại', { title: 'Toàn bộ', text: 'Nội dung.' }), 'Nội dung.');
 });
 
 test('TC-71e: số La Mã sau một từ giữ nguyên, từ giống La Mã (CIVIL, MID, DIM) vẫn đổi', () => {
