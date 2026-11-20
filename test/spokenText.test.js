@@ -56,3 +56,26 @@ test('TC-71j (PMO #99): các dòng PHỤ LỤC viết hoa liền nhau thành câ
   assert.strictEqual(intro('Xem phụ lục 1.a và tỉ lệ 2.5 lần.'), 'Xem phụ lục 1a và tỉ lệ 2.5 lần.');
   assert.strictEqual(intro('CHƯƠNG MỘT: TỐT LÀ\nVĨ ĐẠI.'), 'Chương Một: Tốt Là Vĩ Đại.');
 });
+
+const LONG_PREV = 'Chúng tôi đã nghiên cứu kỹ lưỡng trong nhiều năm và thấy rằng';
+
+test('TC-71k (PMO #107): nội dung chương giữ dấu chấm; chỉ số mục sau Phụ lục/Appendix bỏ chấm', () => {
+  for (const s of ['năm 1995.Ở đây.', 'in 1995.A new.', 'mục 1.A.', 'điểm 1.b nhé.', '3.Tiếp.', 'bản v2.0.']) {
+    assert.strictEqual(intro(s), s);
+  }
+  assert.strictEqual(intro('Phụ lục 1.A và 1.B.'), 'Phụ lục 1A và 1.B.');
+  assert.strictEqual(intro('Appendix 2.C shows.'), 'Appendix 2C shows.');
+  assert.strictEqual(intro('APPENDIX 2.C: DATA SOURCES'), 'APPENDIX 2C: Data Sources');
+  assert.strictEqual(intro('TPHỤ LỤC 1.A.'), 'Tphụ Lục 1.A.');
+  assert.strictEqual(intro('phụ lục1.A.'), 'phụ lục1.A.');
+  assert.ok(LONG_PREV.length >= 50);
+  assert.strictEqual(intro(`${LONG_PREV}\nPHẦN LỚN CÁC CÔNG TY TỐT`), `${LONG_PREV} Phần Lớn Các Công Ty Tốt`);
+  assert.strictEqual(intro(`${LONG_PREV}\nCHƯƠNG HAI`), `${LONG_PREV} Chương Hai`);
+  assert.strictEqual(intro(`${LONG_PREV}\nPHỤ LỤC 3`), `${LONG_PREV}.\nPhụ Lục 3`);
+});
+
+test('TC-71l (biên BR-23.1a): dấu ":" trước dòng PHỤ LỤC, Phụ lục không viết hoa, PHỤ LỤCA', () => {
+  assert.strictEqual(intro('Danh sách:\nPHỤ LỤC 3'), 'Danh sách:\nPhụ Lục 3');
+  assert.strictEqual(intro(`${LONG_PREV}\nPhụ lục 2 cho thấy.`), `${LONG_PREV} Phụ lục 2 cho thấy.`);
+  assert.strictEqual(intro(`${LONG_PREV}\nPHỤ LỤCA BÊN`), `${LONG_PREV} Phụ Lụca Bên`);
+});

@@ -83,10 +83,10 @@ const stripFootnotes = (text) => text.replace(FOOTNOTE, '');
 const WRAP_MIN = 50;
 const SENTENCE_END = /[.!?…:;]["”’»]*$/;
 const isCaps = (s) => /\p{L}/u.test(s) && s === s.toUpperCase();
-/** PMO #99: dòng viết hoa bắt đầu bằng từ khoá tiêu đề ("PHỤ LỤC 1.B") là mục mới, không ghép vào dòng trước. */
-const HEADING_START = /^(chương|phần|phụ lục|chapter|part|appendix)(?![\p{L}\p{M}\p{N}])/iu;
-/** PMO #99: "1.A"/"1.b" (đánh số mục) đọc thành "1A", không đọc "chấm"; số thập phân "2.5" giữ nguyên. */
-const NUM_LETTER = /(\d)\.(\p{L})(?![\p{L}\p{M}\p{N}])/gu;
+/** PMO #99/#107: chỉ dòng viết hoa bắt đầu bằng Phụ lục/Appendix ("PHỤ LỤC 1.B") là mục mới, không ghép vào dòng trước. */
+const HEADING_START = /^(phụ lục|appendix)(?![\p{L}\p{M}\p{N}])/iu;
+/** PMO #99/#107: chỉ số mục ngay sau Phụ lục/Appendix ("Phụ lục 1.A") đọc "1A"; mọi chỗ khác giữ dấu chấm. */
+const NUM_LETTER = /(?<![\p{L}\p{M}\p{N}])((?:phụ lục|appendix)\s+\d+)\.(\p{L})(?![\p{L}\p{M}\p{N}])/giu;
 const joinNumbering = (text) => text.replace(NUM_LETTER, '$1$2');
 
 /**

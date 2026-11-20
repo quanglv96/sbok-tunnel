@@ -115,6 +115,27 @@ test('TC-71i: txt đã ghép dòng/đổi chữ hoa; tên file và payload theo 
   assert.ok(out.progress.includes(`TTS_PROCESSING|2 chương, ${chars} ký tự`));
 });
 
+test('TC-71l: đầu đề "PHỤ LỤC 1.A" đọc "Phụ Lục 1A."; tên file và payload giữ tiêu đề gốc', async () => {
+  const chapters = [{ index: 1, title: 'CHƯƠNG MỘT', text: 'Nội dung năm 1995.Ở đây.' },
+    { index: 2, title: 'PHỤ LỤC 1.A', text: 'Bảng số liệu.' }];
+  const { ctx, job } = setup({ splitResults: [chapters] });
+  const files = [];
+  const titles = [];
+  ctx.backend.chapterDone = async (id, title, author, ch) => { titles.push(ch.title); return true; };
+  ctx.deps.synthesizeBatch = async (cfg, items, log, onDone) => {
+    items.forEach((it, i) => {
+      files.push({ name: path.basename(it.in), text: fs.readFileSync(it.in, 'utf8') });
+      fs.writeFileSync(it.out, 'mp3');
+      onDone(i, { durationSec: 1 });
+    });
+  };
+  await processJob(job, ctx);
+  assert.ok(files[0].text.endsWith('Nội dung năm 1995.Ở đây.'));
+  assert.ok(files[1].text.includes('Phụ Lục 1A.\n'));
+  assert.ok(files[1].name.includes('PHỤ LỤC 1.A'));
+  assert.deepStrictEqual(titles, ['CHƯƠNG MỘT', 'PHỤ LỤC 1.A']);
+});
+
 test('TC-1: mode heuristic → splitChapters như cũ, không gọi Ollama/LLM', async () => {
   const { out, ctx, job } = setup({ mode: 'heuristic' });
   await processJob(job, ctx);
