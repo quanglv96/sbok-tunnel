@@ -47,3 +47,12 @@ test('TC-71f: biên 49/50 ký tự, dấu kết câu trong ngoặc kép, dòng r
   assert.strictEqual(intro('dòng một\n\nDòng hai'), 'dòng một\n\nDòng hai');
   assert.strictEqual(intro('Johnson\n, Merck và Pepsi.'), 'Johnson, Merck và Pepsi.');
 });
+
+test('TC-71j (PMO #99): các dòng PHỤ LỤC viết hoa liền nhau thành câu riêng, "1.A" đọc thành "1A"', () => {
+  const text = 'PHỤ LỤC 1.A.: QUÁ TRÌNH TUYỂN CHỌN CÔNG TY NHẢY VỌT\n'
+    + 'PHỤ LỤC 1.B: TUYỂN CHỌN CÔNG TY SO SÁNH TRỰC\nTIẾP\nPHỤ LỤC 2';
+  assert.strictEqual(intro(text), 'Phụ Lục 1A.: Quá Trình Tuyển Chọn Công Ty Nhảy Vọt.\n'
+    + 'Phụ Lục 1B: Tuyển Chọn Công Ty So Sánh Trực Tiếp.\nPhụ Lục 2');
+  assert.strictEqual(intro('Xem phụ lục 1.a và tỉ lệ 2.5 lần.'), 'Xem phụ lục 1a và tỉ lệ 2.5 lần.');
+  assert.strictEqual(intro('CHƯƠNG MỘT: TỐT LÀ\nVĨ ĐẠI.'), 'Chương Một: Tốt Là Vĩ Đại.');
+});

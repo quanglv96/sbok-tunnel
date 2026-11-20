@@ -69,10 +69,10 @@ function progressText(label, chapterRatio, doneChars, totalChars) {
  */
 function spokenText(bookTitle, ch) {
   const text = reflow(stripFootnotes(ch.text));
-  if (ch.title === 'Giới thiệu') return unCaps(text);
+  if (ch.title === 'Giới thiệu') return joinNumbering(unCaps(text));
   const sentence = (s) => `${s.trim().replace(/[\s.:;,\-–—]+$/, '')}.`;
   const head = ch.title === 'Toàn bộ' ? sentence(bookTitle) : `${sentence(bookTitle)} ${sentence(ch.title)}`;
-  return unCaps(`${head}\n${text}`);
+  return joinNumbering(unCaps(`${head}\n${text}`));
 }
 
 /** PMO #83: dấu chú thích "[12]", "[3, 4]", "[5-7]" (số ≤ 3 chữ số, không đụng năm "[2001]") không đọc ra. */
@@ -83,6 +83,11 @@ const stripFootnotes = (text) => text.replace(FOOTNOTE, '');
 const WRAP_MIN = 50;
 const SENTENCE_END = /[.!?…:;]["”’»]*$/;
 const isCaps = (s) => /\p{L}/u.test(s) && s === s.toUpperCase();
+/** PMO #99: dòng viết hoa bắt đầu bằng từ khoá tiêu đề ("PHỤ LỤC 1.B") là mục mới, không ghép vào dòng trước. */
+const HEADING_START = /^(chương|phần|phụ lục|chapter|part|appendix)(?![\p{L}\p{M}\p{N}])/iu;
+/** PMO #99: "1.A"/"1.b" (đánh số mục) đọc thành "1A", không đọc "chấm"; số thập phân "2.5" giữ nguyên. */
+const NUM_LETTER = /(\d)\.(\p{L})(?![\p{L}\p{M}\p{N}])/gu;
+const joinNumbering = (text) => text.replace(NUM_LETTER, '$1$2');
 
 /**
  * PMO #92: ghép dòng bị ngắt theo khổ giấy thành đoạn để TTS không ngắt giữa câu. Dòng có dấu kết câu giữ xuống
@@ -96,6 +101,9 @@ function reflow(text) {
     const last = out.length - 1;
     const prev = out[last];
     if (!line || !prev || SENTENCE_END.test(prev)) {
+      out.push(line);
+    } else if (isCaps(line) && HEADING_START.test(line)) {
+      out[last] = `${prev}.`;
       out.push(line);
     } else if (!/^\p{Lu}/u.test(line) || prevRaw.length >= WRAP_MIN || (isCaps(prevRaw) && isCaps(line))
       || !/[\p{L}\p{N})"”’]$/u.test(prev)) {
