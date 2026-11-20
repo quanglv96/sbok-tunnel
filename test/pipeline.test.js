@@ -10,7 +10,7 @@ const { readJob } = require('../src/retryQueue');
 
 test('spokenText: đầu chương đọc tên sách + tên chương; Giới thiệu giữ nguyên; Toàn bộ chỉ tên sách (#151)', () => {
   assert.strictEqual(spokenText('Từ tốt đến vĩ đại', { title: 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI', text: 'Nội dung.' }),
-    'Từ tốt đến vĩ đại. CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI.\nNội dung.');
+    'Từ tốt đến vĩ đại. Chương Một: Tốt Là Kẻ Thù Của Vĩ Đại.\nNội dung.'); // PMO #92: chữ hoa toàn bộ bị đánh vần
   assert.strictEqual(spokenText('Sách.', { title: 'Chương 2 -', text: 'X' }), 'Sách. Chương 2.\nX');
   assert.strictEqual(spokenText('Sách', { title: 'Giới thiệu', text: 'Bìa' }), 'Bìa');
   assert.strictEqual(spokenText('Sách', { title: 'Toàn bộ', text: 'X' }), 'Sách.\nX');
