@@ -73,6 +73,23 @@ test('TC-69e: log tách chương LLM có "(đã thử …)" chỉ khi đã lùi 
   assert.ok(!normal.out.logs.some((l) => l.includes('(đã thử')));
 });
 
+test('TC-70e: txt ghi ra không còn [12]; chars và payload chương không đổi', async () => {
+  const withNote = [{ index: 1, title: 'Phần 1', text: 'Trang một bột giấy[12].\nTrang hai nội dung.' },
+    { index: 2, title: 'Phần 2', text: 'Trang ba nội dung.\nTrang bốn nội dung.' }];
+  const { out, ctx, job } = setup({ splitResults: [withNote] });
+  const texts = [];
+  ctx.deps.synthesizeBatch = async (cfg, items, log, onDone) => {
+    items.forEach((it, i) => { texts.push(fs.readFileSync(it.in, 'utf8')); fs.writeFileSync(it.out, 'mp3'); onDone(i, { durationSec: 1 }); });
+  };
+  await processJob(job, ctx);
+  assert.strictEqual(texts.length, 2);
+  assert.ok(texts[0].includes('Trang một bột giấy.'));
+  assert.ok(!texts.some((t) => t.includes('[12]')));
+  const chars = withNote.reduce((n, c) => n + c.text.length, 0);
+  assert.ok(out.progress.includes(`TTS_PROCESSING|2 chương, ${chars} ký tự`));
+  assert.deepStrictEqual(out.chapterDone, [1, 2]);
+});
+
 test('TC-1: mode heuristic → splitChapters như cũ, không gọi Ollama/LLM', async () => {
   const { out, ctx, job } = setup({ mode: 'heuristic' });
   await processJob(job, ctx);
