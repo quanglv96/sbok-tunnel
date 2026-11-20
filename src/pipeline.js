@@ -115,8 +115,10 @@ function reflow(text) {
  */
 const CAPS_WORD = '\\p{Lu}[\\p{Lu}\\p{M}]+';
 const CAPS_RUN = new RegExp(`(?<![\\p{L}\\p{N}])${CAPS_WORD}(?:[ \\t]+${CAPS_WORD})+(?![\\p{L}\\p{M}\\p{N}])`, 'gu');
+/** BR-23.2 (PMO #95): số La Mã đứng sau một từ ("PHẦN II", "THẾ CHIẾN II") giữ nguyên; "CIVIL", "MID" không phải. */
+const ROMAN = /^(?=.)M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$/;
 const unCaps = (text) => text.replace(CAPS_RUN, (run) => run.replace(/\p{L}[\p{L}\p{M}]*/gu,
-  (w) => w[0] + w.slice(1).toLowerCase()));
+  (w, i) => (i > 0 && ROMAN.test(w) ? w : w[0] + w.slice(1).toLowerCase())));
 
 /**
  * BR-20: tên file chương (không đuôi) `003 - Tiêu đề`: bỏ ký tự cấm Windows và ký tự điều khiển, gộp khoảng trắng,
