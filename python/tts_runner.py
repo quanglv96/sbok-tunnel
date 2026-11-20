@@ -22,18 +22,21 @@ DEFAULT_VOICE = "Thiện Minh"  # Nam · Bắc · Phong cách kể chuyện (pre
 
 
 def chunks(text):
-    """Mỗi câu một đoạn (#147: không gộp nhiều câu, để khoảng lặng nằm giữa mọi câu).
+    """Mỗi câu một đoạn (#147: không gộp nhiều câu, để khoảng lặng nằm giữa mọi câu). Trả (đoạn, đầu_câu).
 
     Câu dài hơn MAX_CHUNK cắt ở dấu phẩy, không được thì ở khoảng trắng gần nhất, cuối cùng mới cắt cứng.
+    PMO #92: phần cắt tiếp của cùng một câu có đầu_câu=False để không chèn khoảng lặng giữa câu.
     """
     for sentence in re.split(r"(?<=[.!?…;:])\s+", re.sub(r"\s+", " ", text).strip()):
+        first = True
         while len(sentence) > MAX_CHUNK:
             cut = sentence.rfind(", ", 0, MAX_CHUNK) + 1 or sentence.rfind(" ", 0, MAX_CHUNK)
             cut = cut if cut > 0 else MAX_CHUNK
-            yield sentence[:cut].strip()
+            yield sentence[:cut].strip(), first
             sentence = sentence[cut:].strip()
+            first = False
         if sentence:
-            yield sentence
+            yield sentence, first
 
 
 def use_real_files_in_hf_cache():
@@ -208,8 +211,8 @@ def synthesize_one(tts, src, dst, voice, mode, speed, pause_ms, bitrate, ffmpeg)
     step = max(1, len(parts) // 10)
     pieces = []
     silence = np.zeros(int(SAMPLE_RATES[mode] * pause_ms / 1000), dtype=np.float32)
-    for i, part in enumerate(parts, 1):
-        if pieces:
+    for i, (part, new_sentence) in enumerate(parts, 1):
+        if pieces and new_sentence:
             pieces.append(silence)
         pieces.extend(np.asarray(w, dtype=np.float32) for w in infer_safe(tts, part, voice))
         if i % step == 0 or i == len(parts):

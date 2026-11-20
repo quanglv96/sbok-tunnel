@@ -68,16 +68,55 @@ function progressText(label, chapterRatio, doneChars, totalChars) {
  * "Toàn bộ" (không tách được chương) chỉ đọc tên sách.
  */
 function spokenText(bookTitle, ch) {
-  const text = stripFootnotes(ch.text);
-  if (ch.title === 'Giới thiệu') return text;
+  const text = reflow(stripFootnotes(ch.text));
+  if (ch.title === 'Giới thiệu') return unCaps(text);
   const sentence = (s) => `${s.trim().replace(/[\s.:;,\-–—]+$/, '')}.`;
   const head = ch.title === 'Toàn bộ' ? sentence(bookTitle) : `${sentence(bookTitle)} ${sentence(ch.title)}`;
-  return `${head}\n${text}`;
+  return unCaps(`${head}\n${text}`);
 }
 
 /** PMO #83: dấu chú thích "[12]", "[3, 4]", "[5-7]" (số ≤ 3 chữ số, không đụng năm "[2001]") không đọc ra. */
 const FOOTNOTE = /[ \t]*\[\d{1,3}(?:\s*[,–-]\s*\d{1,3})*\]/g;
 const stripFootnotes = (text) => text.replace(FOOTNOTE, '');
+
+/** PMO #92: dòng PDF ngắt giữa câu thường dài; dòng ngắn hơn mà không có dấu câu là tiêu đề/tên riêng đứng riêng. */
+const WRAP_MIN = 50;
+const SENTENCE_END = /[.!?…:;]["”’»]*$/;
+const isCaps = (s) => /\p{L}/u.test(s) && s === s.toUpperCase();
+
+/**
+ * PMO #92: ghép dòng bị ngắt theo khổ giấy thành đoạn để TTS không ngắt giữa câu. Dòng có dấu kết câu giữ xuống
+ * dòng; dòng ngắn (< WRAP_MIN) không dấu câu, dòng sau viết hoa chữ đầu (tiêu đề, tên tác giả, tên sách) thì thêm
+ * "." để đọc thành câu riêng; hai dòng viết hoa toàn bộ liền nhau là một tiêu đề, ghép lại.
+ */
+function reflow(text) {
+  const out = [];
+  let prevRaw = '';
+  for (const line of text.split('\n').map((l) => l.trim())) {
+    const last = out.length - 1;
+    const prev = out[last];
+    if (!line || !prev || SENTENCE_END.test(prev)) {
+      out.push(line);
+    } else if (!/^\p{Lu}/u.test(line) || prevRaw.length >= WRAP_MIN || (isCaps(prevRaw) && isCaps(line))
+      || !/[\p{L}\p{N})"”’]$/u.test(prev)) {
+      out[last] = `${prev}${/^[.,;:!?…)]/.test(line) ? '' : ' '}${line}`;
+    } else {
+      out[last] = `${prev}.`;
+      out.push(line);
+    }
+    prevRaw = line;
+  }
+  return out.join('\n');
+}
+
+/**
+ * PMO #92: chuỗi ≥ 2 từ viết hoa toàn bộ (tên tác giả "BERYL MARKHAM", tiêu đề) TTS đánh vần từng chữ cái →
+ * đổi sang viết hoa chữ đầu. Một từ viết hoa đứng riêng (NASDAQ, GE, IBM) là từ viết tắt, giữ nguyên.
+ */
+const CAPS_WORD = '\\p{Lu}[\\p{Lu}\\p{M}]+';
+const CAPS_RUN = new RegExp(`(?<![\\p{L}\\p{N}])${CAPS_WORD}(?:[ \\t]+${CAPS_WORD})+(?![\\p{L}\\p{M}\\p{N}])`, 'gu');
+const unCaps = (text) => text.replace(CAPS_RUN, (run) => run.replace(/\p{L}[\p{L}\p{M}]*/gu,
+  (w) => w[0] + w.slice(1).toLowerCase()));
 
 /**
  * BR-20: tên file chương (không đuôi) `003 - Tiêu đề`: bỏ ký tự cấm Windows và ký tự điều khiển, gộp khoảng trắng,
