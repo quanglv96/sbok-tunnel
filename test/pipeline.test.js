@@ -8,12 +8,12 @@ const path = require('path');
 const { processJob, progressText, spokenText, uploadChapter } = require('../src/pipeline');
 const { readJob } = require('../src/retryQueue');
 
-test('spokenText: đầu chương đọc tên sách + tên chương; Giới thiệu giữ nguyên; Toàn bộ chỉ tên sách (#151)', () => {
+test('spokenText: PMO #117 bỏ đầu đề tên sách + tên chương (#151) ở mọi chương, chỉ đọc nội dung', () => {
   assert.strictEqual(spokenText('Từ tốt đến vĩ đại', { title: 'CHƯƠNG MỘT: TỐT LÀ KẺ THÙ CỦA VĨ ĐẠI', text: 'Nội dung.' }),
-    'Từ tốt đến vĩ đại. Chương Một: Tốt Là Kẻ Thù Của Vĩ Đại.\nNội dung.'); // PMO #92: chữ hoa toàn bộ bị đánh vần
-  assert.strictEqual(spokenText('Sách.', { title: 'Chương 2 -', text: 'X' }), 'Sách. Chương 2.\nX');
+    'Nội dung.');
+  assert.strictEqual(spokenText('Sách.', { title: 'Chương 2 -', text: 'X' }), 'X');
   assert.strictEqual(spokenText('Sách', { title: 'Giới thiệu', text: 'Bìa' }), 'Bìa');
-  assert.strictEqual(spokenText('Sách', { title: 'Toàn bộ', text: 'X' }), 'Sách.\nX');
+  assert.strictEqual(spokenText('Sách', { title: 'Toàn bộ', text: 'X' }), 'X');
 });
 
 test('progressText: phần trăm chương và tổng, chặn ở 100 (#133)', () => {

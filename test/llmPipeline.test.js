@@ -106,8 +106,8 @@ test('TC-71i: txt đã ghép dòng/đổi chữ hoa; tên file và payload theo 
   };
   await processJob(job, ctx);
   assert.ok(files[0].text.endsWith('Beryl Markham nói rằng trường học tốt.'));
-  assert.ok(files[0].text.includes('Chương Một.'));
-  assert.ok(files[1].text.includes('Phần II.'));
+  assert.ok(files[0].text.startsWith('Beryl Markham')); // PMO #117: không thêm đầu đề tên sách + tên chương
+  assert.strictEqual(files[1].text, 'Trang ba nội dung.');
   assert.ok(files[0].name.includes('CHƯƠNG MỘT'));
   assert.ok(files[1].name.includes('PHẦN II'));
   assert.deepStrictEqual(titles, ['CHƯƠNG MỘT', 'PHẦN II']);
@@ -117,7 +117,7 @@ test('TC-71i: txt đã ghép dòng/đổi chữ hoa; tên file và payload theo 
 
 test('TC-71l: đầu đề "PHỤ LỤC 1.A" đọc "Phụ Lục 1A."; tên file và payload giữ tiêu đề gốc', async () => {
   const chapters = [{ index: 1, title: 'CHƯƠNG MỘT', text: 'Nội dung năm 1995.Ở đây.' },
-    { index: 2, title: 'PHỤ LỤC 1.A', text: 'Bảng số liệu.' }];
+    { index: 2, title: 'PHỤ LỤC 1.A', text: 'PHỤ LỤC 1.A\nBảng số liệu.' }];
   const { ctx, job } = setup({ splitResults: [chapters] });
   const files = [];
   const titles = [];
@@ -131,7 +131,7 @@ test('TC-71l: đầu đề "PHỤ LỤC 1.A" đọc "Phụ Lục 1A."; tên file
   };
   await processJob(job, ctx);
   assert.ok(files[0].text.endsWith('Nội dung năm 1995.Ở đây.'));
-  assert.ok(files[1].text.includes('Phụ Lục 1A.\n'));
+  assert.strictEqual(files[1].text, 'Phụ Lục 1A.\nBảng số liệu.');
   assert.ok(files[1].name.includes('PHỤ LỤC 1.A'));
   assert.deepStrictEqual(titles, ['CHƯƠNG MỘT', 'PHỤ LỤC 1.A']);
 });
@@ -152,7 +152,7 @@ test('AC-2: mode llm thành công → chương theo LLM, TTS + báo chương ch�
   assert.strictEqual(out.splitCalls[0].opts.model, 'qwen2.5:3b');
   assert.deepStrictEqual(out.chapterDone, [1, 2]);
   assert.strictEqual(out.completed, 1);
-  assert.ok(fs.readFileSync(path.join(config.jobsDir, 't1', '001 - Phần 1.txt'), 'utf8').startsWith('Sách A. Phần 1.\n'));
+  assert.ok(fs.readFileSync(path.join(config.jobsDir, 't1', '001 - Phần 1.txt'), 'utf8').startsWith('Trang một nội dung.')); // PMO #117: không đầu đề
   assert.ok(!fs.existsSync(pdfPath));
   assert.ok(!fs.existsSync(pagesJson));
   assert.strictEqual(readJob(config.jobsDir, 't1'), null);
