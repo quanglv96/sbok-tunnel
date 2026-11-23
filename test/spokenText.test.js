@@ -41,6 +41,7 @@ test('TC-72 (PMO #117): chương không mở đầu bằng tên sách + tên ch�
   assert.strictEqual(out, 'Chương Một: Tốt Là Kẻ Thù Của Vĩ Đại.\nTốt là kẻ thù.');
   assert.ok(!out.includes('Từ tốt đến vĩ đại'));
   assert.strictEqual(spokenText('Từ tốt đến vĩ đại', { title: 'Toàn bộ', text: 'Nội dung.' }), 'Nội dung.');
+  assert.strictEqual(spokenText('S', { title: 'Chương 2 -', text: 'X' }), 'X'); // heuristic
 });
 
 test('TC-71e: số La Mã sau một từ giữ nguyên, từ giống La Mã (CIVIL, MID, DIM) vẫn đổi', () => {
